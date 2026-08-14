@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+:root { color-scheme: dark; }
+
+html, body { height: 100%; background: #000; }
+
+body {
+  margin: 0;
+  overscroll-behavior: none;
+  font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+}
+
+/* The simulation is a fixed camera view; scrolling it would break the illusion. */
+body[data-scene="immersive"] { overflow: hidden; }
+
+@media (prefers-reduced-motion: reduce) {
+  /* Rahul still crosses the room — removing that would remove the product —
+     but every ambient flourish is cut and the approach is shortened. */
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
