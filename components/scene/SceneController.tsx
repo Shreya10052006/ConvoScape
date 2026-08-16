@@ -35,9 +35,16 @@ import {
   RAHUL_WALK_TUNING,
 } from "@/lib/scene/sceneConfig";
 
+import RahulVideoController, { type RahulVideoState } from "./RahulVideoController";
+
 interface Props {
   scene: SceneState;
   send: (e: SceneEvent) => void;
+  rahulVideoState?: RahulVideoState;
+  rahulSpeakingVideoUrl?: string | null;
+  onRahulSpeakingEnded?: () => void;
+  onRahulSpeakingError?: () => void;
+  onRahulWalkingEnded?: () => void;
   /** hall.png + hall-foreground.png present. */
   hallAvailable?: boolean;
   /** Character PNGs present. Silhouettes stand in until they are. */
@@ -47,6 +54,11 @@ interface Props {
 export default function SceneController({
   scene,
   send,
+  rahulVideoState = "IDLE",
+  rahulSpeakingVideoUrl = null,
+  onRahulSpeakingEnded,
+  onRahulSpeakingError,
+  onRahulWalkingEnded,
   hallAvailable = true,
   charactersAvailable = false,
 }: Props) {
@@ -65,7 +77,9 @@ export default function SceneController({
     // Rahul stands, looks over, then commits to walking. The pause is what sells
     // "he noticed you" rather than "he was dispatched".
     if (scene === "RAHUL_FAR") after(1400, { type: "SETTLE_COMPLETE" });
+    if (scene === "RAHUL_WALKING") after(5500, { type: "WALK_COMPLETE" });
     if (scene === "RAHUL_NEAR") after(700, { type: "NEAR_SETTLED" });
+    if (scene === "RAHUL_EXIT") after(4000, { type: "EXIT_COMPLETE" });
     if (scene === "JUDGE_ENTRY") after(JUDGE_SETTLE_MS + 600, { type: "JUDGES_SEATED" });
 
     return () => {
@@ -87,64 +101,24 @@ export default function SceneController({
     );
   }
 
+  const isRahulScene =
+    scene === "RAHUL_FAR" ||
+    scene === "RAHUL_WALKING" ||
+    scene === "RAHUL_NEAR" ||
+    scene === "RAHUL_CONVERSATION" ||
+    scene === "RAHUL_EXIT";
+
   return (
     <div className="fixed inset-0 overflow-hidden bg-black">
-      <HallBackground calibration={HALL_CALIBRATION} fit={fit} hallAvailable={hallAvailable} />
+      {!isRahulScene && <HallBackground calibration={HALL_CALIBRATION} fit={fit} hallAvailable={hallAvailable} />}
 
-      {scene === "RAHUL_FAR" && (
-        <CharacterLayer
-          mode={{ kind: "static", position: RAHUL_PATH[0], asset: ASSETS.rahulFar }}
-          calibration={HALL_CALIBRATION}
-          fit={fit}
-          idleIntensity={0.6}
-          assetAvailable={charactersAvailable}
-          label="RAHUL"
-        />
-      )}
-
-      {scene === "RAHUL_WALKING" && (
-        <CharacterLayer
-          mode={{ kind: "walk", path: RAHUL_PATH, asset: ASSETS.rahulWalk, tuning: RAHUL_WALK_TUNING }}
-          calibration={HALL_CALIBRATION}
-          fit={fit}
-          idleIntensity={0.35}
-          assetAvailable={charactersAvailable}
-          label="RAHUL"
-          onArrive={() => send({ type: "WALK_COMPLETE" })}
-        />
-      )}
-
-      {scene === "RAHUL_NEAR" && (
-        <CharacterLayer
-          mode={{ kind: "static", position: RAHUL_CONVERSATION_POS, asset: ASSETS.rahulNear }}
-          calibration={HALL_CALIBRATION}
-          fit={fit}
-          idleIntensity={0.8}
-          assetAvailable={charactersAvailable}
-          label="RAHUL"
-        />
-      )}
-
-      {scene === "RAHUL_CONVERSATION" && (
-        <CharacterLayer
-          mode={{ kind: "static", position: RAHUL_CONVERSATION_POS, asset: ASSETS.rahulConversation }}
-          calibration={HALL_CALIBRATION}
-          fit={fit}
-          idleIntensity={1}
-          assetAvailable={charactersAvailable}
-          label="RAHUL"
-        />
-      )}
-
-      {scene === "RAHUL_EXIT" && (
-        <CharacterLayer
-          mode={{ kind: "walk", path: RAHUL_EXIT_PATH, asset: ASSETS.rahulWalk, tuning: RAHUL_WALK_TUNING }}
-          calibration={HALL_CALIBRATION}
-          fit={fit}
-          idleIntensity={0.35}
-          assetAvailable={charactersAvailable}
-          label="RAHUL"
-          onArrive={() => send({ type: "EXIT_COMPLETE" })}
+      {isRahulScene && (
+        <RahulVideoController
+          state={rahulVideoState}
+          speakingVideoUrl={rahulSpeakingVideoUrl}
+          onSpeakingEnded={onRahulSpeakingEnded}
+          onSpeakingError={onRahulSpeakingError}
+          onWalkingEnded={onRahulWalkingEnded}
         />
       )}
 
