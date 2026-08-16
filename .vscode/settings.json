@@ -1,0 +1,13 @@
+{
+  "python.analysis.extraPaths": [
+    "C:/Users/Shreya/AppData/Roaming/Python/Python313/site-packages",
+    "${workspaceFolder}/backend",
+    "${workspaceFolder}/backend/Wav2Lip"
+  ],
+  "python.autoComplete.extraPaths": [
+    "C:/Users/Shreya/AppData/Roaming/Python/Python313/site-packages",
+    "${workspaceFolder}/backend",
+    "${workspaceFolder}/backend/Wav2Lip"
+  ],
+  "python.analysis.typeCheckingMode": "off"
+}

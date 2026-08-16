@@ -35,10 +35,13 @@ import {
 } from "@/lib/scene/perspective";
 import { WalkPath, idleOffset, DEFAULT_WALK, type WalkTuning } from "@/lib/scene/walkPath";
 import type { CharacterAsset, SpriteSheetAsset } from "@/lib/scene/sceneConfig";
+import RahulVideoController, { type RahulVideoState } from "./RahulVideoController";
 
-type Mode =
+export type Mode =
   | { kind: "static"; position: WorldPoint; asset: CharacterAsset }
-  | { kind: "walk"; path: WorldPoint[]; asset: SpriteSheetAsset; tuning?: WalkTuning };
+  | { kind: "walk"; path: WorldPoint[]; asset: SpriteSheetAsset; tuning?: WalkTuning }
+  | { kind: "video"; position: WorldPoint; videoState: RahulVideoState; asset: CharacterAsset }
+  | { kind: "videoWalk"; path: WorldPoint[]; videoState: RahulVideoState; asset: CharacterAsset; tuning?: WalkTuning };
 
 interface Props {
   mode: Mode;
@@ -88,6 +91,10 @@ export default function CharacterLayer({
   const modeKey =
     mode.kind === "walk"
       ? `walk:${mode.asset.src}:${mode.path.map((p) => `${p.x},${p.d}`).join("|")}`
+      : mode.kind === "videoWalk"
+      ? `videoWalk:${mode.path.map((p) => `${p.x},${p.d}`).join("|")}`
+      : mode.kind === "video"
+      ? `video:${mode.position.x},${mode.position.d}`
       : `static:${mode.asset.src}:${mode.position.x},${mode.position.d}`;
 
   // The rAF loop reads these live rather than re-arming when they change, so a
@@ -100,7 +107,10 @@ export default function CharacterLayer({
     if (!node) return;
 
     arrivedRef.current = false;
-    const walker = mode.kind === "walk" ? new WalkPath(mode.path, mode.tuning ?? DEFAULT_WALK) : null;
+    const walker =
+      mode.kind === "walk" || mode.kind === "videoWalk"
+        ? new WalkPath(mode.path, mode.tuning ?? DEFAULT_WALK)
+        : null;
     const asset = mode.asset;
 
     // A sprite sheet's file is many frames wide, but what's on screen is ONE
@@ -167,7 +177,7 @@ export default function CharacterLayer({
         }
       } else {
         const current = modeRef.current;
-        if (current.kind === "static") {
+        if (current.kind === "static" || current.kind === "video") {
           let pos = current.position;
           if (settleFromDepth > 0 && settleMs > 0 && elapsed * 1000 < settleMs) {
             // easeOutCubic on depth only — no lateral drift, so it reads as
@@ -209,19 +219,23 @@ export default function CharacterLayer({
   }, [modeKey, calibration, fit, idleIntensity, allowFlip, fadeInMs, settleFromDepth, settleMs]);
 
   const asset = mode.asset;
+  const artW = mode.kind === "walk" ? (asset as SpriteSheetAsset).frameWidth : asset.naturalWidth;
+  const artH = mode.kind === "walk" ? (asset as SpriteSheetAsset).frameHeight : asset.naturalHeight;
 
   return (
     <div
       ref={nodeRef}
       className="pointer-events-none absolute left-0 top-0 will-change-transform"
       style={{
-        width: mode.kind === "walk" ? (asset as SpriteSheetAsset).frameWidth : asset.naturalWidth,
-        height: mode.kind === "walk" ? (asset as SpriteSheetAsset).frameHeight : asset.naturalHeight,
+        width: artW,
+        height: artH,
       }}
       aria-hidden
     >
       {assetAvailable ? (
-        mode.kind === "walk" ? (
+        mode.kind === "video" || mode.kind === "videoWalk" ? (
+          <RahulVideoController state={mode.videoState} />
+        ) : mode.kind === "walk" ? (
           <div
             ref={spriteRef}
             style={{

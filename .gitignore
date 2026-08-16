@@ -3,4 +3,8 @@ node_modules
 .env.local
 tsconfig.tsbuildinfo
 *.log
-
+public/generated/
+backend/temp_*.avi
+backend/test_*.wav
+backend/diagnostic_*.wav
+backend/obvious_*.wav

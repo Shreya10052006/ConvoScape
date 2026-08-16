@@ -24,6 +24,7 @@ interface SpeakOptions {
   onStart?: () => void;
   onEnd?: () => void;
   onError?: () => void;
+  onSpeakingChange?: (isSpeaking: boolean) => void;
 }
 
 const VOICE_TUNING: Record<CharacterVoice, { pitch: number; rate: number; preferMale: boolean }> = {
@@ -76,15 +77,17 @@ function pickVoice(character: CharacterVoice): SpeechSynthesisVoice | null {
 }
 
 function splitSentences(text: string): string[] {
-  const parts = text.match(/[^.!?]+[.!?]*/g) ?? [text];
-  // Merge very short fragments (e.g. "Mr.") back into neighbours so we don't
-  // introduce robotic micro-pauses on abbreviations.
+  // Clause splitting on commas, semicolons, colons, and sentence ends
+  const parts = text.match(/[^,;:!?.]+[,,;:!?.]*/g) ?? [text];
   const out: string[] = [];
   for (const p of parts) {
     const t = p.trim();
     if (!t) continue;
-    if (out.length && t.length < 12) out[out.length - 1] += " " + t;
-    else out.push(t);
+    if (out.length && t.length < 8 && !/[,;:!?.]/.test(out[out.length - 1])) {
+      out[out.length - 1] += " " + t;
+    } else {
+      out.push(t);
+    }
   }
   return out.length ? out : [text];
 }
@@ -115,19 +118,29 @@ export function speak(text: string, opts: SpeakOptions): void {
     u.rate = tuning.rate;
     u.lang = "en-US";
 
-    if (i === 0) {
-      u.onstart = () => {
+    u.onstart = () => {
+      if (i === 0) {
         started = true;
         opts.onStart?.();
-      };
-    }
-    if (i === chunks.length - 1) {
-      u.onend = () => opts.onEnd?.();
-      u.onerror = () => {
+      }
+      opts.onSpeakingChange?.(true);
+    };
+
+    u.onend = () => {
+      opts.onSpeakingChange?.(false);
+      if (i === chunks.length - 1) {
+        opts.onEnd?.();
+      }
+    };
+
+    u.onerror = () => {
+      opts.onSpeakingChange?.(false);
+      if (i === chunks.length - 1) {
         if (!started) opts.onError?.();
         else opts.onEnd?.();
-      };
-    }
+      }
+    };
+
     activeUtterances.push(u);
     window.speechSynthesis.speak(u);
   });
