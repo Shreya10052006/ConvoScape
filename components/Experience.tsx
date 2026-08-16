@@ -52,9 +52,12 @@ import { InterruptionTracker } from "@/lib/speech/interruptionTracker";
 interface Props {
   project: ProjectContext;
   onRestart: () => void;
+  skipCameraConsentForTesting?: boolean;
 }
 
-export default function Experience({ project, onRestart }: Props) {
+const HIDE_JUDGES_FOR_NOW = true;
+
+export default function Experience({ project, onRestart, skipCameraConsentForTesting = false }: Props) {
   const [scene, sceneSend] = useReducer(sceneReducer, "HALL_IDLE");
   const [conversation, dispatchConversation] = useReducer(
     conversationReducer,
@@ -63,7 +66,7 @@ export default function Experience({ project, onRestart }: Props) {
   );
 
   const [cameraState, setCameraState] = useState<CameraState>("CAMERA_OFF");
-  const [cameraAsked, setCameraAsked] = useState(false);
+  const [cameraAsked, setCameraAsked] = useState(skipCameraConsentForTesting);
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [cameraNotice, setCameraNotice] = useState<string | null>(null);
   const [recordingBlob, setRecordingBlob] = useState<Blob | null>(null);
@@ -155,6 +158,12 @@ export default function Experience({ project, onRestart }: Props) {
     if (finished === "presentation") stamp("presentationEndedAt");
     if (finished === "judgeQA") stamp("judgeQnaEndedAt");
 
+    if (finished === "rahul" && HIDE_JUDGES_FOR_NOW) {
+      console.log("[Experience] Rahul conversation completed. Judges are hidden for now until Rahul phase is approved.");
+      setRahulSpeechState("LISTENING");
+      return;
+    }
+
     dispatchConversation({ type: "ADVANCE_STAGE" });
 
     // Rahul's phase ending is the only boundary that changes who is on screen.
@@ -202,17 +211,27 @@ export default function Experience({ project, onRestart }: Props) {
     sceneSend({ type: "REPORT_READY" }); // REPORT_GENERATION -> REPORT
   }, []);
 
-  // --- Gating ---------------------------------------------------------------
-  const showCameraConsent = scene === "RAHUL_CONVERSATION" && !cameraAsked;
+  // Camera consent is asked right after setup questions before video scene starts
+  const showCameraConsent = !cameraAsked;
   // Offered once Rahul is walking away, so it lands in the natural pause before
   // the judges rather than interrupting a conversation.
   const showFullscreenPrompt = scene === "RAHUL_EXIT" && !fullscreenAsked;
+
+  const handleRahulWalkingEnded = useCallback(() => {
+    console.log("[Experience] Rahul walking approach video ended. Arrived at table.");
+    if (scene === "RAHUL_WALKING" || scene === "RAHUL_FAR" || scene === "RAHUL_NEAR") {
+      sceneSend({ type: "WALK_COMPLETE" });
+      sceneSend({ type: "NEAR_SETTLED" });
+    }
+  }, [scene]);
 
   const activeStage: Exclude<ConversationStage, "done"> =
     conversation.stage === "done" ? "judgeQA" : conversation.stage;
 
   const conversationActive =
-    (scene === "RAHUL_CONVERSATION" && cameraAsked && conversation.stage === "rahul") ||
+    ((scene === "RAHUL_CONVERSATION" || scene === "RAHUL_WALKING" || scene === "RAHUL_FAR" || scene === "RAHUL_NEAR") &&
+      cameraAsked &&
+      conversation.stage === "rahul") ||
     (scene === "JUDGE_CONVERSATION" &&
       (conversation.stage === "judgeIntro" ||
         conversation.stage === "presentation" ||
@@ -235,6 +254,47 @@ export default function Experience({ project, onRestart }: Props) {
     [conversation.transcript, project]
   );
 
+  const [rahulSpeechState, setRahulSpeechState] = useState<"SPEAKING" | "LISTENING" | "IDLE">("IDLE");
+  const [rahulSpeakingVideoUrl, setRahulSpeakingVideoUrl] = useState<string | null>(null);
+  const videoEndCallbackRef = useRef<(() => void) | null>(null);
+  const videoErrorCallbackRef = useRef<((err?: unknown) => void) | null>(null);
+
+  const handleRahulSpeakingEnded = useCallback(() => {
+    setRahulSpeakingVideoUrl(null);
+    setRahulSpeechState("LISTENING");
+    if (videoEndCallbackRef.current) {
+      const cb = videoEndCallbackRef.current;
+      videoEndCallbackRef.current = null;
+      cb();
+    }
+  }, []);
+
+  const handleRahulSpeakingError = useCallback((err?: unknown) => {
+    console.warn("[Experience] Rahul speaking video playback error:", err);
+    setRahulSpeakingVideoUrl(null);
+    setRahulSpeechState("LISTENING");
+    if (videoErrorCallbackRef.current) {
+      const cb = videoErrorCallbackRef.current;
+      videoErrorCallbackRef.current = null;
+      cb(err);
+    }
+  }, []);
+
+  const registerVideoEndCallback = useCallback((cb: (() => void) | null) => {
+    videoEndCallbackRef.current = cb;
+  }, []);
+
+  const registerVideoErrorCallback = useCallback((cb: ((err?: unknown) => void) | null) => {
+    videoErrorCallbackRef.current = cb;
+  }, []);
+
+  const rahulVideoState =
+    scene === "RAHUL_FAR" || scene === "RAHUL_WALKING"
+      ? "WALKING"
+      : scene === "RAHUL_EXIT"
+      ? "LEAVING"
+      : rahulSpeechState;
+
   if (scene === "REPORT_GENERATION" || scene === "REPORT") {
     return (
       <ReportPage
@@ -254,7 +314,17 @@ export default function Experience({ project, onRestart }: Props) {
 
   return (
     <>
-      <SceneController scene={scene} send={sceneSend} hallAvailable charactersAvailable />
+      <SceneController
+        scene={scene}
+        send={sceneSend}
+        rahulVideoState={rahulVideoState}
+        rahulSpeakingVideoUrl={rahulSpeakingVideoUrl}
+        onRahulSpeakingEnded={handleRahulSpeakingEnded}
+        onRahulSpeakingError={handleRahulSpeakingError}
+        onRahulWalkingEnded={handleRahulWalkingEnded}
+        hallAvailable
+        charactersAvailable
+      />
 
       {conversationActive && (
         <ConversationController
@@ -267,6 +337,10 @@ export default function Experience({ project, onRestart }: Props) {
           onTopic={handleTopic}
           onStageComplete={handleStageComplete}
           interruptions={interruptionsRef.current}
+          onVisualStateChange={setRahulSpeechState}
+          onRahulVideoGenerated={setRahulSpeakingVideoUrl}
+          registerVideoEndCallback={registerVideoEndCallback}
+          registerVideoErrorCallback={registerVideoErrorCallback}
         />
       )}
 

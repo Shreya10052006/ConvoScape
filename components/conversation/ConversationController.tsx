@@ -58,6 +58,10 @@ interface Props {
   onStageComplete: () => void;
   /** Shared across phases so counts accumulate over the whole session. */
   interruptions?: InterruptionTracker;
+  onVisualStateChange?: (state: "SPEAKING" | "LISTENING" | "IDLE") => void;
+  onRahulVideoGenerated?: (url: string) => void;
+  registerVideoEndCallback?: (cb: (() => void) | null) => void;
+  registerVideoErrorCallback?: (cb: (() => void) | null) => void;
 }
 
 type LocalStatus = "idle" | "requesting" | "speaking" | "listening" | "typing" | "presenting" | "error";
@@ -72,6 +76,10 @@ export default function ConversationController({
   onTopic,
   onStageComplete,
   interruptions,
+  onVisualStateChange,
+  onRahulVideoGenerated,
+  registerVideoEndCallback,
+  registerVideoErrorCallback,
 }: Props) {
   const [status, setStatus] = useState<LocalStatus>("idle");
   const [caption, setCaption] = useState("");
@@ -81,6 +89,17 @@ export default function ConversationController({
   const [typedValue, setTypedValue] = useState("");
   const [micUnavailable, setMicUnavailable] = useState(false);
   const [presentationEndsAt, setPresentationEndsAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!active) return;
+    if (status === "speaking") {
+      onVisualStateChange?.("SPEAKING");
+    } else if (status === "listening" || status === "presenting" || status === "typing") {
+      onVisualStateChange?.("LISTENING");
+    } else {
+      onVisualStateChange?.("IDLE");
+    }
+  }, [active, status, onVisualStateChange]);
 
   const recognitionRef = useRef<SpeechRecognitionHandle | null>(null);
   const answersThisStageRef = useRef(0);
@@ -218,10 +237,6 @@ export default function ConversationController({
         });
         onTopic(turn.topicCovered);
 
-        setCaption(turn.reply);
-        setCaptionSpeaker(speaker);
-        setStatus("speaking");
-
         const proceed = () => {
           if (isFinalTurn) {
             setCaption("");
@@ -236,16 +251,85 @@ export default function ConversationController({
           showSystem("Running in offline mode — questions are less tailored than usual.", 6000);
         }
 
+        if (speaker === "rahul") {
+          try {
+            const isOpeningTurn = stageHistory.length === 0;
+            const turnId = isOpeningTurn ? "turn1-opening" : ((turn as any).id || Date.now().toString());
+
+            const vidRes = await fetch("/api/generate-video", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ responseId: turnId, text: turn.reply }),
+            });
+            const vidData = await vidRes.json();
+            if (vidRes.ok && vidData.videoUrl) {
+              onRahulVideoGenerated?.(vidData.videoUrl);
+
+              const triggerFallback = () => {
+                console.warn("[ConversationController] Video playback failed, falling back to browser TTS over listening.mp4.");
+                registerVideoEndCallback?.(null);
+                registerVideoErrorCallback?.(null);
+                setCaption(turn.reply);
+                setCaptionSpeaker(speaker);
+                speak(turn.reply, {
+                  character: "rahul",
+                  onStart: () => interruptions?.characterSpeechStarted(),
+                  onEnd: () => {
+                    interruptions?.characterSpeechEnded();
+                    setCaption("");
+                    setCaptionSpeaker(null);
+                    onVisualStateChange?.("LISTENING");
+                    proceed();
+                  },
+                  onError: () => {
+                    interruptions?.characterSpeechEnded();
+                    setCaption("");
+                    setCaptionSpeaker(null);
+                    window.setTimeout(proceed, 1500);
+                  },
+                });
+              };
+
+              registerVideoErrorCallback?.(triggerFallback);
+
+              registerVideoEndCallback?.(() => {
+                registerVideoEndCallback?.(null);
+                registerVideoErrorCallback?.(null);
+                setCaption("");
+                setCaptionSpeaker(null);
+                onVisualStateChange?.("LISTENING");
+                proceed();
+              });
+
+              setStatus("speaking");
+              onVisualStateChange?.("SPEAKING");
+              setCaption(turn.reply);
+              setCaptionSpeaker(speaker);
+              return;
+            }
+          } catch (vidErr) {
+            console.warn("[ConversationController] Video generation error, falling back to browser TTS:", vidErr);
+          }
+        }
+
+        setCaption(turn.reply);
+        setCaptionSpeaker(speaker);
+        setStatus("speaking");
+
         speak(turn.reply, {
           character: (speaker === "rahul" ? "rahul" : speaker) as CharacterVoice,
           onStart: () => interruptions?.characterSpeechStarted(),
+          onSpeakingChange: (isSpeaking) => {
+            if (speaker === "rahul") {
+              onVisualStateChange?.(isSpeaking ? "SPEAKING" : "LISTENING");
+            }
+          },
           onEnd: () => {
             interruptions?.characterSpeechEnded();
             proceed();
           },
           onError: () => {
-            // TTS unavailable, but the line is on screen — hold it a beat so it
-            // can be read, then continue as if it had been spoken.
+            // TTS unavailable, hold beat then proceed
             interruptions?.characterSpeechEnded();
             window.setTimeout(proceed, 1500);
           },
@@ -255,7 +339,7 @@ export default function ConversationController({
         setErrorMessage((err as Error).message);
       }
     },
-    [stage, project, stageHistory, priorPhaseSummary, onTurn, onTopic, onStageComplete, interruptions, showSystem]
+    [stage, project, stageHistory, priorPhaseSummary, onTurn, onTopic, onStageComplete, interruptions, showSystem, onVisualStateChange, onRahulVideoGenerated, registerVideoEndCallback, registerVideoErrorCallback]
   );
 
   const requestTurnRef = useRef(requestTurn);
