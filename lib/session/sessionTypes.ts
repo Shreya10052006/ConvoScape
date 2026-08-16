@@ -85,7 +85,7 @@ export interface ConversationState {
  * minutes, and 6 Q&A exchanges lands the panel in the 5-7 minute band.
  */
 export const STAGE_TURN_TARGET: Record<Exclude<ConversationStage, "done">, number> = {
-  rahul: 7,
+  rahul: 10,
   judgeIntro: 3,
   presentation: 1,
   judgeQA: 6,

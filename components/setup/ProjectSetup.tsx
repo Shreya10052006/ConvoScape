@@ -23,20 +23,11 @@ const QUESTIONS: Array<{
   required: boolean;
   multiline?: boolean;
 }> = [
-  { key: "userName", prompt: "First, what's your name?", hint: "Rahul will use it", required: true },
-  { key: "college", prompt: "Which college are you representing?", hint: "The judges will ask", required: true },
   { key: "name", prompt: "What's the project called?", hint: "CareVista", required: true },
   { key: "domain", prompt: "What domain does it fall under?", hint: "HealthTech, FinTech, EdTech, Sustainability…", required: true },
   { key: "topic", prompt: "In a few words, what is it?", hint: "AI-powered rural telemedicine", required: true },
-  {
-    key: "description",
-    prompt: "Say it the way you'd say it to someone at the next table.",
-    hint: "A consent-first telemedicine platform for rural patients.",
-    required: true,
-    multiline: true,
-  },
-  { key: "problem", prompt: "What problem does it solve?", hint: "Optional", required: false, multiline: true },
-  { key: "stack", prompt: "What did you build it with?", hint: "Optional", required: false },
+  { key: "problem", prompt: "What problem does it solve?", hint: "Lack of access to specialized care…", required: true, multiline: true },
+  { key: "stack", prompt: "What did you build it with?", hint: "Tech Stack (Optional)", required: false },
 ];
 
 export default function ProjectSetup({ onComplete }: { onComplete: (p: ProjectContext) => void }) {
@@ -50,12 +41,12 @@ export default function ProjectSetup({ onComplete }: { onComplete: (p: ProjectCo
     if (!canAdvance) return;
     if (step === QUESTIONS.length - 1) {
       onComplete({
-        userName: values.userName ?? "",
-        college: values.college ?? "",
+        userName: values.userName || "Alex",
+        college: values.college || "Tech University",
         name: values.name ?? "",
         domain: values.domain ?? "",
         topic: values.topic ?? "",
-        description: values.description ?? "",
+        description: values.topic || values.name || "",
         stack: values.stack,
         problem: values.problem,
       });
