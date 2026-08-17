@@ -8,3 +8,9 @@ backend/temp_*.avi
 backend/test_*.wav
 backend/diagnostic_*.wav
 backend/obvious_*.wav
+backend/__pycache__/
+backend/models/
+backend/Wav2Lip/
+*.pth
+*.pyc
+
