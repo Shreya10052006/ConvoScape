@@ -29,8 +29,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ videoUrl, cached: true });
   }
 
-  // 2. Generate Video via verified Wav2Lip engine
+  // 2. Generate Video via fast in-memory daemon (port 5001) or subprocess fallback
   try {
+    // Try fast in-memory daemon on port 5001 first
+    const daemonRes = await fetch("http://127.0.0.1:5001", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ responseId: cleanId, text }),
+    }).catch(() => null);
+
+    if (daemonRes && daemonRes.ok) {
+      if (fs.existsSync(publicVideoPath)) {
+        return NextResponse.json({ videoUrl, cached: false });
+      }
+    }
+
+    // Subprocess fallback
     const cwd = process.cwd();
     await execFileAsync("python", ["backend/generate_response_video.py", cleanId, text], { cwd, timeout: 120000 });
 
