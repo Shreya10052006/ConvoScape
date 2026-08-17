@@ -80,7 +80,7 @@ def generate_rahul_video(response_id, text):
     wav = audio.load_wav(audio_path, 16000)
     mel = audio.melspectrogram(wav)
 
-    # 4. Read Source Frames
+    # 4. Read Source Frames (Cached in memory/disk)
     cap = cv2.VideoCapture(source_video)
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -99,6 +99,15 @@ def generate_rahul_video(response_id, text):
     fw, fh = x2 - x1, y2 - y1
     box = (y1, y2, x1, x2)
 
+    # Pre-compute Gaussian blur mask once
+    mask_single = np.zeros((fh, fw, 3), dtype=np.float32)
+    cv2.ellipse(mask_single, (fw // 2, int(fh * 0.65)), 
+                (fw // 2 - 5, int(fh * 0.28)), 0, 0, 360, (1, 1, 1), -1)
+    mask_single = cv2.GaussianBlur(mask_single, (11, 11), 0)
+
+    # Pre-extract face crops for source frames
+    pre_face_crops = [cv2.resize(f[y1:y2, x1:x2], (96, 96)) for f in full_frames]
+
     # 6. Align Mel Chunks
     mel_step_size = 16
     mel_chunks = []
@@ -113,8 +122,8 @@ def generate_rahul_video(response_id, text):
         i += 1
 
     # 7. Batch Inference
-    batch_size = 32
-    img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
+    batch_size = 64
+    img_batch, mel_batch, frame_batch = [], [], []
 
     fourcc = cv2.VideoWriter_fourcc(*'DIVX')
     out = cv2.VideoWriter(temp_avi, fourcc, fps, (frame_w, frame_h))
@@ -122,13 +131,11 @@ def generate_rahul_video(response_id, text):
     for i, m in enumerate(mel_chunks):
         idx = i % len(full_frames)
         frame_to_save = full_frames[idx].copy()
-        face_crop = frame_to_save[y1:y2, x1:x2]
-        face_resized = cv2.resize(face_crop, (96, 96))
+        face_resized = pre_face_crops[idx]
 
         img_batch.append(face_resized)
         mel_batch.append(m)
         frame_batch.append(frame_to_save)
-        coords_batch.append(box)
 
         if len(img_batch) >= batch_size or i == len(mel_chunks) - 1:
             arr_img = np.asarray(img_batch)
@@ -148,26 +155,16 @@ def generate_rahul_video(response_id, text):
 
             pred_np = pred.cpu().numpy().transpose(0, 2, 3, 1) * 255.0
 
-            for p, f, c in zip(pred_np, frame_batch, coords_batch):
+            for p, f in zip(pred_np, frame_batch):
                 p_uint8 = np.clip(p, 0, 255).astype(np.uint8)
-                cy1, cy2, cx1, cx2 = c
+                p_resized = cv2.resize(p_uint8, (fw, fh)).astype(np.float32)
+                orig_face = f[y1:y2, x1:x2].astype(np.float32)
 
-                p_resized = cv2.resize(p_uint8, (cx2 - cx1, cy2 - cy1))
-
-                mask = np.zeros((cy2 - cy1, cx2 - cx1, 3), dtype=np.float32)
-                cv2.ellipse(mask, ((cx2 - cx1)//2, int((cy2 - cy1) * 0.65)), 
-                            ((cx2 - cx1)//2 - 5, int((cy2 - cy1) * 0.28)), 0, 0, 360, (1, 1, 1), -1)
-                mask = cv2.GaussianBlur(mask, (11, 11), 0)
-
-                orig_face = f[cy1:cy2, cx1:cx2].astype(np.float32)
-                pred_face_f32 = p_resized.astype(np.float32)
-
-                blended_face = (pred_face_f32 * mask + orig_face * (1 - mask)).astype(np.uint8)
-
-                f[cy1:cy2, cx1:cx2] = blended_face
+                blended_face = (p_resized * mask_single + orig_face * (1.0 - mask_single)).astype(np.uint8)
+                f[y1:y2, x1:x2] = blended_face
                 out.write(f)
 
-            img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
+            img_batch, mel_batch, frame_batch = [], [], []
 
     out.release()
 
