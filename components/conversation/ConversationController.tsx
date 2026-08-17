@@ -252,10 +252,51 @@ export default function ConversationController({
         }
 
         if (speaker === "rahul") {
-          try {
-            const isOpeningTurn = stageHistory.length === 0;
-            const turnId = isOpeningTurn ? "turn1-opening" : ((turn as any).id || Date.now().toString());
+          const rahulTurnCount = stageHistory.filter((t) => t.speaker === "rahul").length;
+          const presetTurnIds = ["turn1-opening", "turn2", "turn3", "turn4", "turn5", "turn6", "turn7"];
+          const turnId = presetTurnIds[rahulTurnCount] || ((turn as any).id || Date.now().toString());
 
+          // Trigger immediate status, caption, and audio/video playback setup
+          setStatus("speaking");
+          setCaption(turn.reply);
+          setCaptionSpeaker(speaker);
+
+          const triggerFallback = () => {
+            console.warn("[ConversationController] Video playback failed or slow, using TTS over listening.mp4.");
+            registerVideoEndCallback?.(null);
+            registerVideoErrorCallback?.(null);
+            speak(turn.reply, {
+              character: "rahul",
+              onStart: () => interruptions?.characterSpeechStarted(),
+              onEnd: () => {
+                interruptions?.characterSpeechEnded();
+                setCaption("");
+                setCaptionSpeaker(null);
+                onVisualStateChange?.("LISTENING");
+                proceed();
+              },
+              onError: () => {
+                interruptions?.characterSpeechEnded();
+                setCaption("");
+                setCaptionSpeaker(null);
+                window.setTimeout(proceed, 1500);
+              },
+            });
+          };
+
+          registerVideoErrorCallback?.(triggerFallback);
+
+          registerVideoEndCallback?.(() => {
+            registerVideoEndCallback?.(null);
+            registerVideoErrorCallback?.(null);
+            setCaption("");
+            setCaptionSpeaker(null);
+            onVisualStateChange?.("LISTENING");
+            proceed();
+          });
+
+          // Fetch generated video (instant 15ms cache hit for Turn 1 or pre-generated turns)
+          try {
             const vidRes = await fetch("/api/generate-video", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -264,52 +305,16 @@ export default function ConversationController({
             const vidData = await vidRes.json();
             if (vidRes.ok && vidData.videoUrl) {
               onRahulVideoGenerated?.(vidData.videoUrl);
-
-              const triggerFallback = () => {
-                console.warn("[ConversationController] Video playback failed, falling back to browser TTS over listening.mp4.");
-                registerVideoEndCallback?.(null);
-                registerVideoErrorCallback?.(null);
-                setCaption(turn.reply);
-                setCaptionSpeaker(speaker);
-                speak(turn.reply, {
-                  character: "rahul",
-                  onStart: () => interruptions?.characterSpeechStarted(),
-                  onEnd: () => {
-                    interruptions?.characterSpeechEnded();
-                    setCaption("");
-                    setCaptionSpeaker(null);
-                    onVisualStateChange?.("LISTENING");
-                    proceed();
-                  },
-                  onError: () => {
-                    interruptions?.characterSpeechEnded();
-                    setCaption("");
-                    setCaptionSpeaker(null);
-                    window.setTimeout(proceed, 1500);
-                  },
-                });
-              };
-
-              registerVideoErrorCallback?.(triggerFallback);
-
-              registerVideoEndCallback?.(() => {
-                registerVideoEndCallback?.(null);
-                registerVideoErrorCallback?.(null);
-                setCaption("");
-                setCaptionSpeaker(null);
-                onVisualStateChange?.("LISTENING");
-                proceed();
-              });
-
-              setStatus("speaking");
               onVisualStateChange?.("SPEAKING");
-              setCaption(turn.reply);
-              setCaptionSpeaker(speaker);
               return;
+            } else {
+              triggerFallback();
             }
           } catch (vidErr) {
-            console.warn("[ConversationController] Video generation error, falling back to browser TTS:", vidErr);
+            console.warn("[ConversationController] Video generation error, falling back to TTS:", vidErr);
+            triggerFallback();
           }
+          return;
         }
 
         setCaption(turn.reply);
@@ -317,19 +322,13 @@ export default function ConversationController({
         setStatus("speaking");
 
         speak(turn.reply, {
-          character: (speaker === "rahul" ? "rahul" : speaker) as CharacterVoice,
+          character: speaker as CharacterVoice,
           onStart: () => interruptions?.characterSpeechStarted(),
-          onSpeakingChange: (isSpeaking) => {
-            if (speaker === "rahul") {
-              onVisualStateChange?.(isSpeaking ? "SPEAKING" : "LISTENING");
-            }
-          },
           onEnd: () => {
             interruptions?.characterSpeechEnded();
             proceed();
           },
           onError: () => {
-            // TTS unavailable, hold beat then proceed
             interruptions?.characterSpeechEnded();
             window.setTimeout(proceed, 1500);
           },
