@@ -1,16 +1,8 @@
 /**
  * speechRecognition.ts
  * ---------------------------------------------------------------------------
- * Wraps SpeechRecognition (Chrome/Safari only — no Firefox support at all) so
- * the rest of the app depends on a small stable interface, not a vendor-
- * prefixed browser API. Whoever calls this receives { text, startTime,
- * endTime } regardless of whether the words came from the mic or the typed
- * fallback in ConversationController.
- *
- * Known limitations, left visible on purpose rather than hidden:
- *  - Chrome streams audio to Google's servers for recognition; this is not a
- *    fully local pipeline. Documented in the README, not just here.
- *  - Auto-stops on ~silence, which can cut off a slow talker mid-thought.
+ * High-performance, robust SpeechRecognition wrapper with real-time continuous
+ * streaming, live interim transcription feedback, and auto-silence finalization.
  */
 
 export interface RecognitionResult {
@@ -49,9 +41,11 @@ interface SpeechRecognitionLike extends EventTarget {
 function getCtor(): SpeechRecognitionCtor | null {
   if (typeof window === "undefined") return null;
   const w = window as unknown as Record<string, unknown>;
-  return (w.SpeechRecognition as SpeechRecognitionCtor) ??
+  return (
+    (w.SpeechRecognition as SpeechRecognitionCtor) ??
     (w.webkitSpeechRecognition as SpeechRecognitionCtor) ??
-    null;
+    null
+  );
 }
 
 export function isSpeechRecognitionSupported(): boolean {
@@ -66,43 +60,86 @@ export function startSpeechRecognition(opts: StartOptions): SpeechRecognitionHan
   }
 
   const recog = new Ctor();
-  recog.continuous = false;
-  recog.interimResults = Boolean(opts.onInterim);
+  recog.continuous = true;
+  recog.interimResults = true;
   recog.lang = opts.lang ?? "en-US";
 
   const startTime = performance.now();
   let settled = false;
+  let accumulatedFinalText = "";
+  let silenceTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  const commitResult = () => {
+    if (settled) return;
+    const finalTrimmed = accumulatedFinalText.trim();
+    if (finalTrimmed) {
+      settled = true;
+      try {
+        recog.stop();
+      } catch {}
+      opts.onResult({
+        text: finalTrimmed,
+        startTime,
+        endTime: performance.now(),
+        isFinal: true,
+      });
+    }
+  };
+
+  const resetSilenceTimer = () => {
+    if (silenceTimeout) clearTimeout(silenceTimeout);
+    silenceTimeout = setTimeout(() => {
+      commitResult();
+    }, 1400); // 1.4s of natural pause to finalize answer
+  };
 
   recog.onresult = (event: unknown) => {
-    // SpeechRecognitionEvent isn't in lib.dom by default in this TS config;
-    // narrow it locally rather than widening the global type.
-    const e = event as { results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> };
-    for (let i = 0; i < e.results.length; i++) {
+    const e = event as {
+      resultIndex?: number;
+      results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>;
+    };
+    let currentInterim = "";
+
+    const startIndex = typeof e.resultIndex === "number" ? e.resultIndex : 0;
+    for (let i = startIndex; i < e.results.length; i++) {
       const r = e.results[i];
       if (r.isFinal) {
-        settled = true;
-        opts.onResult({
-          text: r[0].transcript.trim(),
-          startTime,
-          endTime: performance.now(),
-          isFinal: true,
-        });
+        accumulatedFinalText += (accumulatedFinalText ? " " : "") + r[0].transcript.trim();
       } else {
-        opts.onInterim?.(r[0].transcript);
+        currentInterim += (currentInterim ? " " : "") + r[0].transcript.trim();
       }
+    }
+
+    const fullTranscript = (accumulatedFinalText + (currentInterim ? " " + currentInterim : "")).trim();
+    if (fullTranscript) {
+      opts.onInterim?.(fullTranscript);
+      resetSilenceTimer();
     }
   };
 
   recog.onerror = (event: unknown) => {
     const code = (event as { error?: string }).error;
-    if (code === "no-speech") opts.onError("no-speech");
-    else if (code === "not-allowed" || code === "service-not-allowed") opts.onError("not-allowed");
-    else if (code === "network") opts.onError("network");
-    else if (code === "aborted") opts.onError("aborted");
-    else opts.onError("network");
+    if (code === "no-speech") {
+      // Natural silence during contemplation — do not abort
+      return;
+    }
+    if (code === "not-allowed" || code === "service-not-allowed") {
+      opts.onError("not-allowed");
+    } else if (code === "aborted") {
+      opts.onError("aborted");
+    } else {
+      opts.onError("network");
+    }
   };
 
-  recog.onend = () => opts.onEnd();
+  recog.onend = () => {
+    if (silenceTimeout) clearTimeout(silenceTimeout);
+    if (!settled && accumulatedFinalText.trim()) {
+      commitResult();
+    } else {
+      opts.onEnd();
+    }
+  };
 
   try {
     recog.start();
@@ -111,5 +148,13 @@ export function startSpeechRecognition(opts: StartOptions): SpeechRecognitionHan
     return null;
   }
 
-  return { stop: () => recog.stop() };
+  return {
+    stop: () => {
+      if (silenceTimeout) clearTimeout(silenceTimeout);
+      settled = true;
+      try {
+        recog.stop();
+      } catch {}
+    },
+  };
 }
