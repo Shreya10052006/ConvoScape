@@ -30,7 +30,7 @@ function projectBrief(p: ProjectContext): string {
 
 const SPOKEN_STYLE = `STYLE RULES (these matter more than content):
 - This is SPOKEN dialogue read aloud by a speech engine. Write how people talk, not how people write.
-- 1-3 sentences per turn. Never deliver a paragraph.
+- 1-2 concise, punchy sentences per turn (maximum 20 words total). Keep it snappy and natural for instant real-time video generation.
 - At most ONE question per turn.
 - No markdown, no bullet points, no lists, no emoji, no stage directions.
 - Never say "As an AI", never mention being a model, never break character.
