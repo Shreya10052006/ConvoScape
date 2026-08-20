@@ -86,6 +86,7 @@ export default function ConversationController({
   const [captionSpeaker, setCaptionSpeaker] = useState<Speaker | null>(null);
   const [systemNotice, setSystemNotice] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [userInterimSpeech, setUserInterimSpeech] = useState("");
   const [typedValue, setTypedValue] = useState("");
   const [micUnavailable, setMicUnavailable] = useState(false);
   const [presentationEndsAt, setPresentationEndsAt] = useState<number | null>(null);
@@ -130,6 +131,7 @@ export default function ConversationController({
       recognitionRef.current?.stop();
       recognitionRef.current = null;
       setPresentationEndsAt(null);
+      setUserInterimSpeech("");
 
       onTurn({
         id: newTurnId(),
@@ -152,6 +154,7 @@ export default function ConversationController({
 
   const beginListening = useCallback(() => {
     setTypedValue("");
+    setUserInterimSpeech("");
 
     if (stage === "presentation") {
       // The uninterrupted presentation round: timer visible, no prompting.
@@ -169,6 +172,9 @@ export default function ConversationController({
 
     interruptions?.userSpeechStarted();
     recognitionRef.current = startSpeechRecognition({
+      onInterim: (liveText) => {
+        setUserInterimSpeech(liveText);
+      },
       onResult: (r) => {
         interruptions?.userSpeechEnded();
         if (r.text) submitAnswer(r.text, r.startTime, r.endTime);
@@ -253,8 +259,12 @@ export default function ConversationController({
 
         if (speaker === "rahul") {
           const rahulTurnCount = stageHistory.filter((t) => t.speaker === "rahul").length;
-          const presetTurnIds = ["turn1-opening", "turn2", "turn3", "turn4", "turn5", "turn6", "turn7"];
-          const turnId = presetTurnIds[rahulTurnCount] || ((turn as any).id || Date.now().toString());
+          let textHash = 0;
+          for (let i = 0; i < turn.reply.length; i++) {
+            textHash = ((textHash << 5) - textHash + turn.reply.charCodeAt(i)) | 0;
+          }
+          const hashStr = Math.abs(textHash).toString(36);
+          const turnId = rahulTurnCount === 0 ? "turn1-opening" : `dynamic-${hashStr}`;
 
           // Trigger immediate status, caption, and audio/video playback setup
           setStatus("speaking");
@@ -389,6 +399,13 @@ export default function ConversationController({
     <>
       <TranscriptOverlay speaker={captionSpeaker} text={caption} />
       <VoiceIndicator phase={phase} />
+
+      {userInterimSpeech && (
+        <div className="pointer-events-none fixed bottom-24 left-1/2 z-[450] -translate-x-1/2 rounded-2xl bg-black/80 px-6 py-3 text-center backdrop-blur-md border border-white/20 max-w-[min(560px,90vw)] shadow-xl">
+          <p className="font-mono text-[10px] uppercase tracking-widest text-sky-400 mb-1">Live Voice Input</p>
+          <p className="text-base text-neutral-100 italic">&ldquo;{userInterimSpeech}&rdquo;</p>
+        </div>
+      )}
 
       {presentationEndsAt && (
         <PresentationTimer
