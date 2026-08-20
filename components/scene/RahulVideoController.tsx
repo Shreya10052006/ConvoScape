@@ -1,23 +1,7 @@
 "use client";
 
-/**
- * RahulVideoController.tsx
- * ---------------------------------------------------------------------------
- * Full-screen video controller for Rahul with seamless 3-way video transitions:
- *
- *   1. WALKING   : plays /assets/walking.mp4 (Rahul approaches the user's table)
- *   2. SPEAKING  : plays generated Wav2Lip video (/generated/rahul-response-[id].mp4)
- *   3. LISTENING : plays /assets/listening.mp4 ( Rahul in idle pose, looping muted)
- *
- * ROCK-SOLID PRELOAD TRANSITIONS:
- *   - listening.mp4 stays mounted as the base layer.
- *   - walking.mp4 plays during initial approach and triggers onWalkingEnded when finished.
- *   - speakingVideo fades in ONLY after canplay and play() succeed.
- *   - Never shows a black screen or gets stuck.
- */
-
 import React, { useEffect, useRef, useState } from "react";
-import { RAHUL_VIDEO_ASSETS, ASSETS } from "@/lib/scene/sceneConfig";
+import { RAHUL_VIDEO_ASSETS } from "@/lib/scene/sceneConfig";
 
 export type RahulVideoState = "WALKING" | "SPEAKING" | "LISTENING" | "IDLE" | "LEAVING";
 
@@ -40,184 +24,125 @@ export default function RahulVideoController({
   className = "",
   style = {},
 }: Props) {
-  const [videoErrors, setVideoErrors] = useState<Record<string, boolean>>({});
-  const [speakingActive, setSpeakingActive] = useState(false);
-
+  const listeningVideoRef = useRef<HTMLVideoElement | null>(null);
   const walkingVideoRef = useRef<HTMLVideoElement | null>(null);
   const speakingVideoRef = useRef<HTMLVideoElement | null>(null);
-  const listeningVideoRef = useRef<HTMLVideoElement | null>(null);
 
-  const isWalkingState = state === "WALKING";
-  const isSpeakingState = state === "SPEAKING";
+  const [speakingActive, setSpeakingActive] = useState(false);
+  const isWalking = state === "WALKING";
 
-  // Ensure background listening video is playing muted in background
+  // Ensure base listening video plays continuously in the background
   useEffect(() => {
-    if (listeningVideoRef.current) {
-      const el = listeningVideoRef.current;
+    const el = listeningVideoRef.current;
+    if (el) {
       el.muted = true;
-      el.volume = 0;
-      const p = el.play();
-      if (p !== undefined) {
-        p.catch((err) => {
-          console.warn("[RahulVideoController] Listening video background play notice:", err);
-        });
-      }
+      el.play().catch(() => {});
     }
   }, []);
 
-  // Handle walking approach video playback
+  // Handle Walking video playback
   useEffect(() => {
-    if (isWalkingState && walkingVideoRef.current) {
-      const el = walkingVideoRef.current;
+    const el = walkingVideoRef.current;
+    if (!el) return;
+
+    if (isWalking) {
       el.currentTime = 0;
       el.muted = true;
-      el.volume = 0;
       const p = el.play();
       if (p !== undefined) {
-        p.catch((err) => {
-          console.warn("[RahulVideoController] Walking video play notice:", err);
+        p.catch((err) => console.warn("[RahulVideoController] Walking play error:", err));
+      }
+    } else {
+      el.pause();
+    }
+  }, [isWalking]);
+
+  // Handle Speaking video playback (live lip-sync with sound)
+  useEffect(() => {
+    const el = speakingVideoRef.current;
+    if (!el) return;
+
+    if (state === "SPEAKING" && speakingVideoUrl) {
+      if (el.src !== speakingVideoUrl && !el.src.endsWith(speakingVideoUrl)) {
+        el.src = speakingVideoUrl;
+        el.load();
+      }
+      el.currentTime = 0;
+      el.muted = false;
+      el.volume = 1.0;
+
+      const p = el.play();
+      if (p !== undefined) {
+        p.then(() => {
+          setSpeakingActive(true);
+        }).catch((err) => {
+          console.warn("[RahulVideoController] Unmuted speaking play blocked, retrying muted:", err);
+          el.muted = true;
+          el.play().then(() => setSpeakingActive(true)).catch(() => {
+            setSpeakingActive(false);
+            onSpeakingError?.(err);
+          });
         });
       }
-    }
-  }, [isWalkingState]);
-
-  // When speakingVideoUrl changes, reset active flag until canplay confirms
-  useEffect(() => {
-    if (!speakingVideoUrl || !isSpeakingState) {
+    } else {
       setSpeakingActive(false);
+      el.pause();
     }
-  }, [speakingVideoUrl, isSpeakingState]);
-
-  const handleSpeakingCanPlay = async () => {
-    const vid = speakingVideoRef.current;
-    if (!vid || !isSpeakingState || !speakingVideoUrl) return;
-
-    console.log("[RahulVideoController] Speaking Video Metadata Loaded & Ready:");
-    console.log(`  URL         : ${speakingVideoUrl}`);
-    console.log(`  readyState  : ${vid.readyState}`);
-    console.log(`  networkState : ${vid.networkState}`);
-    console.log(`  duration    : ${vid.duration.toFixed(2)}s`);
-    console.log(`  resolution  : ${vid.videoWidth}x${vid.videoHeight}`);
-
-    try {
-      vid.currentTime = 0;
-      vid.muted = false;
-      vid.volume = 1.0;
-      await vid.play();
-      console.log("[RahulVideoController] Speaking video play() succeeded! Crossfading in.");
-      setSpeakingActive(true);
-    } catch (err) {
-      console.error("[RahulVideoController] speakingVideo.play() rejected:", err);
-      console.error("  Video Error State:", vid.error);
-      setSpeakingActive(false);
-      onSpeakingError?.(err);
-    }
-  };
-
-  const handleSpeakingError = (e: React.SyntheticEvent<HTMLVideoElement, Event>) => {
-    const vid = e.currentTarget;
-    console.error("[RahulVideoController] Speaking video element load error:");
-    console.error(`  URL         : ${speakingVideoUrl}`);
-    console.error(`  readyState  : ${vid?.readyState}`);
-    console.error(`  networkState : ${vid?.networkState}`);
-    console.error(`  error       :`, vid?.error);
-
-    setSpeakingActive(false);
-    setVideoErrors((prev) => ({ ...prev, speaking: true }));
-    onSpeakingError?.(vid?.error);
-  };
-
-  const handleListeningError = () => {
-    console.error("[RahulVideoController] Failed to load background listening.mp4 asset");
-    setVideoErrors((prev) => ({ ...prev, listening: true }));
-  };
-
-  // Visibility logic:
-  // - Show Walking video when state === WALKING and walking video has not errored
-  // - Show Speaking video when state === SPEAKING, video is active & ready
-  // - Show Listening video by default whenever walking or speaking is inactive
-  const showWalking = isWalkingState && !videoErrors["walking"];
-  const showSpeaking = isSpeakingState && speakingActive && speakingVideoUrl && !videoErrors["speaking"];
+  }, [state, speakingVideoUrl, onSpeakingError]);
 
   return (
     <div
       className={`fixed inset-0 z-10 h-full w-full overflow-hidden bg-black ${className}`}
       style={style}
     >
-      {/* 1. Permanent Listening Video Layer (Base layer, visible by default) */}
+      {/* 1. Base Layer: Continuous looping listening video (zIndex: 1) */}
       <video
         ref={listeningVideoRef}
         src={RAHUL_VIDEO_ASSETS.listening}
-        muted
+        autoPlay
         playsInline
+        muted
         loop
         preload="auto"
-        onError={handleListeningError}
-        className="absolute inset-0 h-full w-full object-cover pointer-events-none"
-        style={{
-          opacity: showWalking || showSpeaking ? 0 : 1,
-          zIndex: showWalking || showSpeaking ? 1 : 5,
-          transition: "opacity 300ms ease-in-out",
-        }}
+        className="absolute inset-0 h-full w-full object-cover z-[1]"
       />
 
-      {/* 2. Walking Approach Video Layer (/assets/walking.mp4) */}
+      {/* 2. Walking Layer: Rahul walking approach (zIndex: 2) */}
       <video
         ref={walkingVideoRef}
         src={RAHUL_VIDEO_ASSETS.walking}
+        autoPlay
+        playsInline
         muted
+        preload="auto"
+        onEnded={() => {
+          console.log("[RahulVideoController] Walking video ended.");
+          onWalkingEnded?.();
+        }}
+        className={`absolute inset-0 h-full w-full object-cover z-[2] transition-opacity duration-300 ${
+          isWalking ? "opacity-100" : "opacity-0 pointer-events-none"
+        }`}
+      />
+
+      {/* 3. Speaking Layer: Live dynamic lip-sync video with audio (zIndex: 3) */}
+      <video
+        ref={speakingVideoRef}
         playsInline
         preload="auto"
         onEnded={() => {
-          console.log("[RahulVideoController] Walking video ended. Rahul arrived at table.");
-          onWalkingEnded?.();
+          console.log("[RahulVideoController] Speaking video ended.");
+          setSpeakingActive(false);
+          onSpeakingEnded?.();
         }}
-        onError={() => {
-          console.warn("[RahulVideoController] Walking video asset error, falling back to listening.");
-          setVideoErrors((prev) => ({ ...prev, walking: true }));
-          onWalkingEnded?.();
+        onError={(e) => {
+          console.error("[RahulVideoController] Speaking video error:", e.currentTarget.error);
+          setSpeakingActive(false);
+          onSpeakingError?.(e.currentTarget.error);
         }}
-        className="absolute inset-0 h-full w-full object-cover pointer-events-none"
-        style={{
-          opacity: showWalking ? 1 : 0,
-          zIndex: showWalking ? 10 : 1,
-          transition: "opacity 300ms ease-in-out",
-        }}
+        className={`absolute inset-0 h-full w-full object-cover z-[3] transition-opacity duration-200 ${
+          state === "SPEAKING" && speakingActive ? "opacity-100" : "opacity-0 pointer-events-none"
+        }`}
       />
-
-      {/* 3. Generated Wav2Lip Speaking Video Layer (/generated/rahul-response-[id].mp4) */}
-      {speakingVideoUrl && (
-        <video
-          ref={speakingVideoRef}
-          key={speakingVideoUrl}
-          src={speakingVideoUrl}
-          playsInline
-          preload="auto"
-          onCanPlay={handleSpeakingCanPlay}
-          onEnded={() => {
-            console.log("[RahulVideoController] Generated speaking video ended. Returning to listening.");
-            setSpeakingActive(false);
-            onSpeakingEnded?.();
-          }}
-          onError={handleSpeakingError}
-          className="absolute inset-0 h-full w-full object-cover pointer-events-none"
-          style={{
-            opacity: showSpeaking ? 1 : 0,
-            zIndex: showSpeaking ? 15 : 1,
-            transition: "opacity 300ms ease-in-out",
-          }}
-        />
-      )}
-
-      {/* Fallback Static Image if listening video fails */}
-      {videoErrors["listening"] && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={ASSETS.rahulNear.src}
-          alt="Rahul"
-          className="absolute inset-0 h-full w-full object-cover pointer-events-none z-0"
-        />
-      )}
     </div>
   );
 }
