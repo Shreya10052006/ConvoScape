@@ -21,9 +21,9 @@ site.addsitedir(r'C:\Users\Shreya\AppData\Roaming\Python\Python313\site-packages
 site.addsitedir(site.getusersitepackages())
 
 try:
-    import torch  # type: ignore # pyright: ignore
-    torch.set_num_threads(4)
-    import win32com.client  # type: ignore # pyright: ignore
+    import torch  # type: ignore
+    torch.set_num_threads(os.cpu_count() or 8)
+    import win32com.client  # type: ignore
 except Exception:
     pass
 
@@ -32,18 +32,15 @@ if wav2lip_dir not in sys.path:
     sys.path.insert(0, wav2lip_dir)
 
 try:
-    import audio  # type: ignore # pyright: ignore
-    import face_detection  # type: ignore # pyright: ignore
-    from models import Wav2Lip  # type: ignore # pyright: ignore
+    import audio  # type: ignore
+    from models import Wav2Lip  # type: ignore
 except Exception:
     try:
-        from backend.Wav2Lip import audio  # type: ignore # pyright: ignore
-        from backend.Wav2Lip import face_detection  # type: ignore # pyright: ignore
-        from backend.Wav2Lip.models import Wav2Lip  # type: ignore # pyright: ignore
+        from backend.Wav2Lip import audio  # type: ignore
+        from backend.Wav2Lip.models import Wav2Lip  # type: ignore
     except Exception:
         pass
 
-# GLOBAL IN-MEMORY MODEL & PRE-LOADED ASSETS (Loaded ONCE at server startup)
 print("[Wav2Lip Daemon] Pre-loading PyTorch Wav2Lip GAN model into memory...")
 CHECKPOINT_PATH = os.path.abspath('backend/models/wav2lip_gan.pth')
 SOURCE_VIDEO = os.path.abspath('public/assets/listening.mp4')
@@ -55,7 +52,7 @@ new_s = {k.replace('module.', ''): v for k, v in s_dict.items()}
 MODEL.load_state_dict(new_s, strict=False)
 MODEL.eval()
 
-# Pre-load source frames & face crops ONCE
+# Pre-load source frames & face crops ONCE in memory
 CAP = cv2.VideoCapture(SOURCE_VIDEO)
 FPS = CAP.get(cv2.CAP_PROP_FPS) or 25.0
 FRAME_W = int(CAP.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -81,13 +78,21 @@ PRE_FACE_CROPS = [cv2.resize(f[Y1:Y2, X1:X2], (96, 96)) for f in FULL_FRAMES]
 
 print(f"[Wav2Lip Daemon] READY! Loaded model & {len(FULL_FRAMES)} video frames. Standing by on port 5001...")
 
+FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
+
 def generate_tts_audio(text, audio_path):
-    os.makedirs(os.path.dirname(audio_path), exist_ok=True)
-    speaker = win32com.client.Dispatch("SAPI.SpVoice")
-    stream = win32com.client.Dispatch("SAPI.SpFileStream")
-    stream.Open(audio_path, 3, False)
-    speaker.Speak(text)
-    stream.Close()
+    import pythoncom
+    pythoncom.CoInitialize()
+    try:
+        os.makedirs(os.path.dirname(audio_path), exist_ok=True)
+        speaker = win32com.client.Dispatch("SAPI.SpVoice")
+        stream = win32com.client.Dispatch("SAPI.SpFileStream")
+        stream.Open(audio_path, 3, False)
+        speaker.AudioOutputStream = stream
+        speaker.Speak(text, 0)
+        stream.Close()
+    finally:
+        pythoncom.CoUninitialize()
 
 def process_video_generation(response_id, text):
     out_video = os.path.abspath(f'public/generated/rahul-response-{response_id}.mp4')
@@ -96,14 +101,12 @@ def process_video_generation(response_id, text):
 
     start_time = time.perf_counter()
     audio_path = os.path.abspath(f'public/generated/tts-{response_id}.wav')
-    temp_avi = os.path.abspath(f'backend/temp_{response_id}.avi')
-
     os.makedirs('public/generated', exist_ok=True)
 
-    # 1. Generate Audio
+    # 1. Fast TTS Audio Generation
     generate_tts_audio(text, audio_path)
 
-    # 2. Process Mel
+    # 2. Process Mel Spectrogram
     wav = audio.load_wav(audio_path, 16000)
     mel = audio.melspectrogram(wav)
 
@@ -120,77 +123,60 @@ def process_video_generation(response_id, text):
         mel_chunks.append(mel[:, start_idx : start_idx + mel_step_size])
         i += 1
 
-    # 4. Fast Batch Inference with pre-loaded model
+    num_frames = len(mel_chunks)
     batch_size = 64
-    img_batch, mel_batch, frame_batch = [], [], []
 
-    fourcc = cv2.VideoWriter_fourcc(*'DIVX')
-    out = cv2.VideoWriter(temp_avi, fourcc, FPS, (FRAME_W, FRAME_H))
+    # 4. Direct Fast Single-Pass FFmpeg Streaming Pipe (No temporary AVI disk I/O)
+    pipe_cmd = [
+        FFMPEG_EXE, '-y',
+        '-f', 'rawvideo', '-vcodec', 'rawvideo',
+        '-s', f'{FRAME_W}x{FRAME_H}', '-pix_fmt', 'bgr24', '-r', str(FPS),
+        '-i', '-',
+        '-i', audio_path,
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '128k',
+        '-shortest',
+        '-movflags', '+faststart',
+        out_video
+    ]
+    proc = subprocess.Popen(pipe_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    for i, m in enumerate(mel_chunks):
-        idx = i % len(FULL_FRAMES)
-        frame_to_save = FULL_FRAMES[idx].copy()
-        face_resized = PRE_FACE_CROPS[idx]
+    # 5. Batch Inference with torch.inference_mode()
+    for b_start in range(0, num_frames, batch_size):
+        b_end = min(b_start + batch_size, num_frames)
+        b_chunks = mel_chunks[b_start:b_end]
 
-        img_batch.append(face_resized)
-        mel_batch.append(m)
-        frame_batch.append(frame_to_save)
+        img_batch = np.array([PRE_FACE_CROPS[idx % len(FULL_FRAMES)] for idx in range(b_start, b_end)])
+        img_masked = img_batch.copy()
+        img_masked[:, 48:] = 0
 
-        if len(img_batch) >= batch_size or i == len(mel_chunks) - 1:
-            arr_img = np.asarray(img_batch)
-            arr_mel = np.asarray(mel_batch)
+        concat_img = np.concatenate((img_masked, img_batch), axis=3) / 255.0
+        concat_mel = np.reshape(b_chunks, [len(b_chunks), 80, 16, 1])
 
-            img_masked = arr_img.copy()
-            img_masked[:, 48:] = 0
+        t_img = torch.FloatTensor(np.transpose(concat_img, (0, 3, 1, 2)))
+        t_mel = torch.FloatTensor(np.transpose(concat_mel, (0, 3, 1, 2)))
 
-            concat_img = np.concatenate((img_masked, arr_img), axis=3) / 255.0
-            concat_mel = np.reshape(arr_mel, [len(arr_mel), arr_mel.shape[1], arr_mel.shape[2], 1])
+        with torch.inference_mode():
+            pred = MODEL(t_mel, t_img)
 
-            t_img = torch.FloatTensor(np.transpose(concat_img, (0, 3, 1, 2)))
-            t_mel = torch.FloatTensor(np.transpose(concat_mel, (0, 3, 1, 2)))
+        pred_np = pred.numpy().transpose(0, 2, 3, 1) * 255.0
 
-            with torch.no_grad():
-                pred = MODEL(t_mel, t_img)
+        for j, p in enumerate(pred_np):
+            frame_idx = (b_start + j) % len(FULL_FRAMES)
+            f = FULL_FRAMES[frame_idx].copy()
+            p_uint8 = np.clip(p, 0, 255).astype(np.uint8)
+            p_resized = cv2.resize(p_uint8, (FW, FH)).astype(np.float32)
+            orig_face = f[Y1:Y2, X1:X2].astype(np.float32)
+            f[Y1:Y2, X1:X2] = (p_resized * MASK_SINGLE + orig_face * (1.0 - MASK_SINGLE)).astype(np.uint8)
+            proc.stdin.write(f.tobytes())
 
-            pred_np = pred.cpu().numpy().transpose(0, 2, 3, 1) * 255.0
+    proc.stdin.close()
+    proc.wait()
 
-            for p, f in zip(pred_np, frame_batch):
-                p_uint8 = np.clip(p, 0, 255).astype(np.uint8)
-                p_resized = cv2.resize(p_uint8, (FW, FH)).astype(np.float32)
-                orig_face = f[Y1:Y2, X1:X2].astype(np.float32)
-
-                blended_face = (p_resized * MASK_SINGLE + orig_face * (1.0 - MASK_SINGLE)).astype(np.uint8)
-                f[Y1:Y2, X1:X2] = blended_face
-                out.write(f)
-
-            img_batch, mel_batch, frame_batch = [], [], []
-
-    out.release()
-
-    try:
-        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-        cmd = [
-            ffmpeg_exe, '-y',
-            '-i', temp_avi,
-            '-i', audio_path,
-            '-c:v', 'libx264',
-            '-preset', 'ultrafast',
-            '-pix_fmt', 'yuv420p',
-            '-c:a', 'aac',
-            '-shortest',
-            '-movflags', '+faststart',
-            out_video
-        ]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        elapsed = time.perf_counter() - start_time
-        print(f"[Wav2Lip Daemon] FAST GENERATION SUCCESS: {out_video} in {elapsed:.2f}s!")
-        return out_video
-    finally:
-        if os.path.exists(temp_avi):
-            try:
-                os.remove(temp_avi)
-            except Exception:
-                pass
+    elapsed = time.perf_counter() - start_time
+    print(f"[Wav2Lip Daemon] ULTRA-FAST GENERATION SUCCESS: {num_frames} frames -> {out_video} in {elapsed:.2f}s!")
+    return out_video
 
 class RequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -218,6 +204,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             resp = json.dumps({"error": str(e)})
             self.wfile.write(resp.encode('utf-8'))
+
+    def log_message(self, format, *args):
+        pass
 
 def run_server(port=5001):
     server_address = ('', port)
