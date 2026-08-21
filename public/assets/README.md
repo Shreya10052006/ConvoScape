@@ -1,3 +1,6 @@
-Drop hall.png, hall-foreground.png, rahul-*.png and judge-*.png here.
-See ../../ASSETS.md for exact specifications.
-Missing files degrade to the procedural hall and labelled silhouettes — nothing crashes.
+# Video Assets
+
+This folder contains the core scene videos for ConvoScape:
+- `walking.mp4` - Rahul walking down the aisle to the user's table (initial entry).
+- `speaking.mp4` - Default fallback speaking video with audio lip-sync.
+- `listening.mp4` - Seamless looping listening video while user responds.
