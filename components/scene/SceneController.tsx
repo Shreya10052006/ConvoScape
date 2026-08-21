@@ -15,26 +15,9 @@
  * purely visual and have no business living in the orchestrator.
  */
 
-import { useEffect, useRef } from "react";
-import HallBackground, { useViewportFit } from "./HallBackground";
-import CharacterLayer from "./CharacterLayer";
+import { useRef } from "react";
 import type { SceneEvent, SceneState } from "@/lib/session/sceneMachine";
-import {
-  ARRIVAL_SETTLE_SECONDS,
-  ASSETS,
-  HALL_CALIBRATION,
-  IS_CALIBRATED,
-  JUDGE_1_POS,
-  JUDGE_2_POS,
-  JUDGE_ENTRY_DEPTH_OFFSET,
-  JUDGE_ENTRY_FADE_MS,
-  JUDGE_SETTLE_MS,
-  RAHUL_CONVERSATION_POS,
-  RAHUL_EXIT_PATH,
-  RAHUL_PATH,
-  RAHUL_WALK_TUNING,
-} from "@/lib/scene/sceneConfig";
-
+import { IS_CALIBRATED } from "@/lib/scene/sceneConfig";
 import RahulVideoController, { type RahulVideoState } from "./RahulVideoController";
 
 interface Props {
@@ -45,9 +28,7 @@ interface Props {
   onRahulSpeakingEnded?: () => void;
   onRahulSpeakingError?: () => void;
   onRahulWalkingEnded?: () => void;
-  /** hall.png + hall-foreground.png present. */
   hallAvailable?: boolean;
-  /** Character PNGs present. Silhouettes stand in until they are. */
   charactersAvailable?: boolean;
 }
 
@@ -59,97 +40,16 @@ export default function SceneController({
   onRahulSpeakingEnded,
   onRahulSpeakingError,
   onRahulWalkingEnded,
-  hallAvailable = true,
-  charactersAvailable = false,
 }: Props) {
-  const fit = useViewportFit(HALL_CALIBRATION);
-  const timers = useRef<number[]>([]);
-
-  // Timed beats. Anything driven by an animation finishing reports through
-  // onArrive instead, so a slow device never desynchronises the scene.
-  useEffect(() => {
-    const after = (ms: number, e: SceneEvent) => {
-      const id = window.setTimeout(() => send(e), ms);
-      timers.current.push(id);
-    };
-
-    if (scene === "HALL_IDLE") after(ARRIVAL_SETTLE_SECONDS * 1000, { type: "SETTLE_COMPLETE" });
-    // Rahul stands, looks over, then commits to walking. The pause is what sells
-    // "he noticed you" rather than "he was dispatched".
-    if (scene === "RAHUL_FAR") after(1400, { type: "SETTLE_COMPLETE" });
-    if (scene === "RAHUL_WALKING") after(5500, { type: "WALK_COMPLETE" });
-    if (scene === "RAHUL_NEAR") after(700, { type: "NEAR_SETTLED" });
-    if (scene === "RAHUL_EXIT") after(4000, { type: "EXIT_COMPLETE" });
-    if (scene === "JUDGE_ENTRY") after(JUDGE_SETTLE_MS + 600, { type: "JUDGES_SEATED" });
-
-    return () => {
-      timers.current.forEach(clearTimeout);
-      timers.current = [];
-    };
-  }, [scene, send]);
-
-  if (!fit.ready) return <div className="fixed inset-0 bg-black" />;
-
-  if (fit.portrait) {
-    return (
-      <div className="fixed inset-0 flex flex-col items-center justify-center gap-4 bg-black px-10 text-center">
-        <p className="font-mono text-[11px] uppercase tracking-[0.4em] text-neutral-600">ConvoScape</p>
-        <p className="max-w-xs text-xl font-light leading-snug text-neutral-200">
-          Turn your phone sideways to step into the hall.
-        </p>
-      </div>
-    );
-  }
-
-  const isRahulScene =
-    scene === "RAHUL_FAR" ||
-    scene === "RAHUL_WALKING" ||
-    scene === "RAHUL_NEAR" ||
-    scene === "RAHUL_CONVERSATION" ||
-    scene === "RAHUL_EXIT";
-
   return (
     <div className="fixed inset-0 overflow-hidden bg-black">
-      {!isRahulScene && <HallBackground calibration={HALL_CALIBRATION} fit={fit} hallAvailable={hallAvailable} />}
-
-      {isRahulScene && (
-        <RahulVideoController
-          state={rahulVideoState}
-          speakingVideoUrl={rahulSpeakingVideoUrl}
-          onSpeakingEnded={onRahulSpeakingEnded}
-          onSpeakingError={onRahulSpeakingError}
-          onWalkingEnded={onRahulWalkingEnded}
-        />
-      )}
-
-      {(scene === "JUDGE_ENTRY" || scene === "JUDGE_CONVERSATION") && (
-        <>
-          <CharacterLayer
-            mode={{ kind: "static", position: JUDGE_1_POS, asset: ASSETS.judge1 }}
-            calibration={HALL_CALIBRATION}
-            fit={fit}
-            idleIntensity={0.75}
-            allowFlip={false}
-            fadeInMs={JUDGE_ENTRY_FADE_MS}
-            settleFromDepth={JUDGE_ENTRY_DEPTH_OFFSET}
-            settleMs={JUDGE_SETTLE_MS}
-            assetAvailable={charactersAvailable}
-            label="JUDGE 1"
-          />
-          <CharacterLayer
-            mode={{ kind: "static", position: JUDGE_2_POS, asset: ASSETS.judge2 }}
-            calibration={HALL_CALIBRATION}
-            fit={fit}
-            idleIntensity={0.75}
-            allowFlip={false}
-            fadeInMs={JUDGE_ENTRY_FADE_MS + 220}
-            settleFromDepth={JUDGE_ENTRY_DEPTH_OFFSET}
-            settleMs={JUDGE_SETTLE_MS + 220}
-            assetAvailable={charactersAvailable}
-            label="JUDGE 2"
-          />
-        </>
-      )}
+      <RahulVideoController
+        state={rahulVideoState}
+        speakingVideoUrl={rahulSpeakingVideoUrl}
+        onSpeakingEnded={onRahulSpeakingEnded}
+        onSpeakingError={onRahulSpeakingError}
+        onWalkingEnded={onRahulWalkingEnded}
+      />
 
       <SceneDebugBar scene={scene} send={send} calibrated={IS_CALIBRATED} />
     </div>
