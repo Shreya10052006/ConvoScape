@@ -208,6 +208,68 @@ export default function ConversationController({
       setStatus("requesting");
       setErrorMessage(null);
 
+      const rahulTurnCount = stageHistory.filter((t) => t.speaker === "rahul").length;
+
+      // --- Instant Pre-Generated Turn 1 (Opening Introduction) ---
+      if (stage === "rahul" && rahulTurnCount === 0) {
+        const replyText = "Hey! I was just walking around checking out other tables. I'm Rahul, 3rd year CS from RV College. What's your name, and where are you guys from?";
+        onTurn({
+          id: newTurnId(),
+          speaker: "rahul",
+          text: replyText,
+          stage,
+          kind: "CHARACTER_DIALOGUE",
+          endTime: performance.now(),
+        });
+        onTopic("intro");
+        setStatus("speaking");
+        setCaption(replyText);
+        setCaptionSpeaker("rahul");
+
+        registerVideoEndCallback?.(() => {
+          registerVideoEndCallback?.(null);
+          registerVideoErrorCallback?.(null);
+          setCaption("");
+          setCaptionSpeaker(null);
+          onVisualStateChange?.("LISTENING");
+          beginListeningRef.current();
+        });
+
+        onRahulVideoGenerated?.("/generated/rahul-response-turn1-opening.mp4");
+        onVisualStateChange?.("SPEAKING");
+        return;
+      }
+
+      // --- Instant Pre-Generated Final Turn (Farewell & Judging Countdown) ---
+      if (stage === "rahul" && isFinalTurn) {
+        const replyText = "That sounds seriously awesome! Best of luck with the demo — I heard the judges are starting their rounds in a few hours, so make sure you're ready. I gotta run back to my table to finish our deployment. Catch you later!";
+        onTurn({
+          id: newTurnId(),
+          speaker: "rahul",
+          text: replyText,
+          stage,
+          kind: "CHARACTER_DIALOGUE",
+          endTime: performance.now(),
+        });
+        onTopic("farewell");
+        setStatus("speaking");
+        setCaption(replyText);
+        setCaptionSpeaker("rahul");
+
+        registerVideoEndCallback?.(() => {
+          registerVideoEndCallback?.(null);
+          registerVideoErrorCallback?.(null);
+          setCaption("");
+          setCaptionSpeaker(null);
+          onVisualStateChange?.("LISTENING");
+          onStageComplete();
+        });
+
+        onRahulVideoGenerated?.("/generated/rahul-response-turn-farewell.mp4");
+        onVisualStateChange?.("SPEAKING");
+        return;
+      }
+
       try {
         const res = await fetch("/api/conversation", {
           method: "POST",
