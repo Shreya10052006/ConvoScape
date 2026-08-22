@@ -111,13 +111,14 @@ export default function RahulVideoController({
       <video
         ref={walkingVideoRef}
         src={RAHUL_VIDEO_ASSETS.walking}
-        autoPlay
         playsInline
         muted
         preload="auto"
         onEnded={() => {
-          console.log("[RahulVideoController] Walking video ended.");
-          onWalkingEnded?.();
+          if (isWalking) {
+            console.log("[RahulVideoController] Walking video ended.");
+            onWalkingEnded?.();
+          }
         }}
         className={`absolute inset-0 h-full w-full object-cover z-[2] transition-opacity duration-300 ${
           isWalking ? "opacity-100" : "opacity-0 pointer-events-none"

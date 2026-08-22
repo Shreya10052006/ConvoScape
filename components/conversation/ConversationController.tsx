@@ -264,7 +264,11 @@ export default function ConversationController({
             textHash = ((textHash << 5) - textHash + turn.reply.charCodeAt(i)) | 0;
           }
           const hashStr = Math.abs(textHash).toString(36);
-          const turnId = rahulTurnCount === 0 ? "turn1-opening" : `dynamic-${hashStr}`;
+          const turnId = isFinalTurn
+            ? "turn-farewell"
+            : rahulTurnCount === 0
+            ? "turn1-opening"
+            : `dynamic-${hashStr}`;
 
           // Trigger immediate status, caption, and audio/video playback setup
           setStatus("speaking");

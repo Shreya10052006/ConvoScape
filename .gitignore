@@ -3,7 +3,9 @@ node_modules
 .env.local
 tsconfig.tsbuildinfo
 *.log
-public/generated/
+public/generated/*
+!public/generated/rahul-response-turn1-opening.mp4
+!public/generated/rahul-response-turn-farewell.mp4
 backend/temp_*.avi
 backend/test_*.wav
 backend/diagnostic_*.wav
@@ -13,4 +15,3 @@ backend/models/
 backend/Wav2Lip/
 *.pth
 *.pyc
-

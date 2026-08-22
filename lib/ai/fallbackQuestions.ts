@@ -142,18 +142,18 @@ export function fallbackRahulTurn(
   if (isFinalTurn) {
     return {
       speaker: "rahul",
-      reply: "This sounds solid, honestly. Good luck with the judges — I think they'll like it.",
+      reply: "That sounds awesome! Best of luck with the demo — I heard the judges are starting in a few hours, so be ready. I gotta head back to my table. Catch you later!",
       topicCovered: "closing",
     };
   }
   const lines: Array<[string, string]> = [
-    ["intro", `Hey! I'm Rahul, third year over at the other block. Your table looked busy — what are you building?`],
-    ["problem motivation", `Nice. What made you pick that problem specifically? Was it something you'd run into yourself?`],
-    ["current state", `How far have you actually got with it? Like, what's working right now versus what's still planned?`],
-    ["technical approach", `What's the tricky part technically? There's usually one bit that eats all the time.`],
-    ["users", `Who do you imagine actually using this day to day?`],
-    ["challenges", `What's been the most annoying thing to get working so far?`],
-    ["advice", `One thing — if you're pitching ${project.name} to the judges, I'd lead with the problem before the tech. It lands better. What would your one-line version be?`],
+    ["intro", `Hey! I was just walking around checking out other tables. I'm Rahul, 3rd year CS from RV College. What's your name, and where are you guys from?`],
+    ["project discovery", `Awesome to meet you! Your setup looked really interesting from over there. What are you guys building today?`],
+    ["stack curiosity", `Nice! What tech stack or libraries did you decide to use for this?`],
+    ["architecture", `How does the core workflow actually work behind the scenes?`],
+    ["challenges", `What's been the hardest technical hurdle or bug you ran into so far today?`],
+    ["features", `How much of it is running live right now versus what's still left to wrap up?`],
+    ["peer suggestion", `That's a smart approach. If you're pitching this to the judges, definitely highlight the live demo early on.`],
   ];
   const [topic, reply] = lines[index % lines.length];
   return { speaker: "rahul", reply, topicCovered: topic };
