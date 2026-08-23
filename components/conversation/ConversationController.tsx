@@ -496,19 +496,62 @@ export default function ConversationController({
             e.preventDefault();
             if (typedValue.trim()) submitAnswer(typedValue.trim());
           }}
-          className="fixed bottom-20 left-1/2 z-[500] flex w-[min(560px,90vw)] -translate-x-1/2 items-center gap-2"
+          className="fixed bottom-20 left-1/2 z-[500] flex w-[min(580px,90vw)] -translate-x-1/2 items-center gap-2"
         >
+          {speechSupported && !micUnavailable && (
+            <button
+              type="button"
+              onClick={() => {
+                if (status === "listening") {
+                  recognitionRef.current?.stop();
+                  setStatus("typing");
+                } else {
+                  beginListening();
+                }
+              }}
+              title={status === "listening" ? "Listening... Click to pause mic" : "Click to speak with microphone"}
+              className={`relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full border transition-all backdrop-blur-sm ${
+                status === "listening"
+                  ? "border-emerald-400 bg-emerald-500/25 text-emerald-300 shadow-[0_0_15px_rgba(52,211,153,0.5)]"
+                  : "border-white/20 bg-black/60 text-neutral-300 hover:border-white/40 hover:bg-white/10 hover:text-white"
+              }`}
+            >
+              {status === "listening" && (
+                <span className="absolute inset-0 rounded-full bg-emerald-400/30 animate-ping" />
+              )}
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-5 w-5 relative z-10"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
+                />
+              </svg>
+            </button>
+          )}
           <input
             autoFocus
             value={typedValue}
             onChange={(e) => setTypedValue(e.target.value)}
-            placeholder={speechSupported ? "Type your response…" : "Voice input unavailable — type your response"}
+            placeholder={
+              status === "listening"
+                ? "Listening to your voice... (or type here)"
+                : speechSupported
+                ? "Type response, or click mic to speak…"
+                : "Voice unavailable — type your response"
+            }
             aria-label="Your response"
             className="flex-1 rounded-full border border-white/20 bg-black/60 px-4 py-2 text-sm text-white placeholder:text-neutral-500 backdrop-blur-sm focus:border-sky-400 focus:outline-none"
           />
           <button
             type="submit"
-            className="rounded-full bg-sky-500 px-4 py-2 text-sm font-medium text-white hover:bg-sky-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300"
+            className="rounded-full bg-sky-500 px-5 py-2 text-sm font-medium text-white hover:bg-sky-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-300 transition-colors"
           >
             Send
           </button>
