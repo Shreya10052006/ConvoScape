@@ -52,8 +52,8 @@ wav2lip_image = (
 @app.cls(
     gpu="T4",
     image=wav2lip_image,
-    timeout=60,
-    scaledown_window=300,
+    timeout=120,
+    scaledown_window=1800,
 )
 class Wav2LipEngine:
     model: Any
@@ -239,6 +239,11 @@ class Wav2LipEngine:
 def generate(data: dict):
     text = data.get("text", "")
     response_id = data.get("responseId", "turn")
+
+    if data.get("warmup") or text == "ping" or response_id == "warmup":
+        engine = Wav2LipEngine()
+        engine.process_video.remote("Hi", "ping_warmup")
+        return Response(content='{"status": "warm", "message": "GPU container is pre-warmed"}', media_type="application/json")
 
     if not text:
         return Response(content='{"error": "Missing text"}', status_code=400, media_type="application/json")

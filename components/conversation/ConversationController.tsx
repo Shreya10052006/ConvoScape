@@ -237,6 +237,14 @@ export default function ConversationController({
 
         onRahulVideoGenerated?.("/generated/rahul-response-turn1-opening.mp4");
         onVisualStateChange?.("SPEAKING");
+
+        // Background Warmup Ping: wake up Modal GPU container while Turn 1 intro is playing
+        void fetch("/api/generate-video", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ warmup: true }),
+        }).catch(() => null);
+
         return;
       }
 

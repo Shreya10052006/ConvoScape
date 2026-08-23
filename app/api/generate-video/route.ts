@@ -7,11 +7,23 @@ import { promisify } from "util";
 const execFileAsync = promisify(execFile);
 
 export async function POST(req: NextRequest) {
-  let body: { responseId?: string; text?: string };
+  let body: { responseId?: string; text?: string; warmup?: boolean };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
+  }
+
+  if (body.warmup) {
+    const modalUrl = process.env.MODAL_WAV2LIP_URL;
+    if (modalUrl) {
+      void fetch(modalUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ warmup: true }),
+      }).catch(() => null);
+    }
+    return NextResponse.json({ warmed: true });
   }
 
   const { responseId, text } = body;
