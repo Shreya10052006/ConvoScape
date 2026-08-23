@@ -44,12 +44,30 @@ except Exception:
 
 def generate_tts_audio(text, audio_path):
     os.makedirs(os.path.dirname(audio_path), exist_ok=True)
-    speaker = win32com.client.Dispatch("SAPI.SpVoice")
-    stream = win32com.client.Dispatch("SAPI.SpFileStream")
-    stream.Open(audio_path, 3, False)
-    speaker.AudioOutputStream = stream
-    speaker.Speak(text)
-    stream.Close()
+    temp_mp3 = audio_path.replace(".wav", ".mp3")
+    try:
+        import asyncio
+        import edge_tts
+        communicate = edge_tts.Communicate(text, "en-IN-PrabhatNeural")
+        asyncio.run(communicate.save(temp_mp3))
+        # Convert to 16kHz mono WAV for optimal Wav2Lip lip sync
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        subprocess.run(
+            [ffmpeg_exe, "-y", "-i", temp_mp3, "-ar", "16000", "-ac", "1", audio_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+        if os.path.exists(temp_mp3):
+            os.remove(temp_mp3)
+    except Exception as e:
+        print(f"[TTS] edge-tts error, falling back to SAPI: {e}")
+        speaker = win32com.client.Dispatch("SAPI.SpVoice")
+        stream = win32com.client.Dispatch("SAPI.SpFileStream")
+        stream.Open(audio_path, 3, False)
+        speaker.AudioOutputStream = stream
+        speaker.Speak(text)
+        stream.Close()
 
 def generate_rahul_video(response_id, text):
     out_video = os.path.abspath(f'public/generated/rahul-response-{response_id}.mp4')

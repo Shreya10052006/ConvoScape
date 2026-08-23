@@ -38,6 +38,7 @@ wav2lip_image = (
         "opencv-python-headless==4.8.1.78",
         "librosa==0.10.1",
         "soundfile==0.12.1",
+        "edge-tts==7.2.8",
         "gTTS==2.5.1",
         "pydantic==2.5.3",
         "fastapi==0.109.0",
@@ -141,9 +142,15 @@ class Wav2LipEngine:
         wav_path = f"/tmp/tts_{response_id}.wav"
         out_video = f"/tmp/out_{response_id}.mp4"
 
-        # 1. High-Speed 16kHz Audio Synthesis
-        tts = gTTS(text=text, lang="en", tld="us", slow=False)
-        tts.save(audio_path)
+        # 1. High-Speed 16kHz Audio Synthesis via edge-tts (en-IN-PrabhatNeural)
+        try:
+            import asyncio
+            import edge_tts
+            asyncio.run(edge_tts.Communicate(text, "en-IN-PrabhatNeural").save(audio_path))
+        except Exception as e:
+            print(f"[Modal TTS] edge-tts error, fallback to gTTS: {e}")
+            tts = gTTS(text=text, lang="en", tld="us", slow=False)
+            tts.save(audio_path)
 
         subprocess.run(
             ["ffmpeg", "-y", "-i", audio_path, "-ar", "16000", "-ac", "1", wav_path],

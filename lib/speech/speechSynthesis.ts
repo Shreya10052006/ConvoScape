@@ -58,15 +58,16 @@ function pickVoice(character: CharacterVoice): SpeechSynthesisVoice | null {
   const voices = loadVoices().filter((v) => v.lang.startsWith("en"));
   if (!voices.length) return null;
   const tuning = VOICE_TUNING[character];
-  // Heuristic only — voice names aren't standardised, so this is best-effort
-  // rather than a guarantee. Rate/pitch differentiation below is the fallback
-  // that actually always works.
+
   const scored = voices
     .map((v) => {
       const name = v.name.toLowerCase();
-      const looksMale = /male|david|mark|daniel|guy|ravi/.test(name) && !/female/.test(name);
+      const lang = v.lang.toLowerCase();
+      const isIndian = lang.includes("in") || /india|prabhat|ravi|neerja|priya/.test(name);
+      const looksMale = /male|david|mark|daniel|guy|ravi|prabhat/.test(name) && !/female/.test(name);
       const looksFemale = /female|zira|susan|samantha|priya|neerja/.test(name);
       let score = 0;
+      if (character === "rahul" && isIndian) score += 4;
       if (tuning.preferMale && looksMale) score += 2;
       if (!tuning.preferMale && looksFemale) score += 2;
       if (v.localService) score += 1;
