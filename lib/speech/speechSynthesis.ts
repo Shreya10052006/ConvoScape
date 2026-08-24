@@ -19,6 +19,18 @@
 
 export type CharacterVoice = "rahul" | "judge1" | "judge2";
 
+/**
+ * Canonical Neural Voice assignments across ConvoScape:
+ * - Rahul (Peer Student): en-US-GuyNeural
+ * - Judge 1 (Female Lead Judge): en-GB-SoniaNeural
+ * - Judge 2 (Male Technical Judge): en-US-ChristopherNeural
+ */
+export const CHARACTER_NEURAL_VOICES: Record<CharacterVoice, string> = {
+  rahul: "en-US-GuyNeural",
+  judge1: "en-GB-SoniaNeural",
+  judge2: "en-US-ChristopherNeural",
+};
+
 interface SpeakOptions {
   character: CharacterVoice;
   onStart?: () => void;
@@ -28,9 +40,9 @@ interface SpeakOptions {
 }
 
 const VOICE_TUNING: Record<CharacterVoice, { pitch: number; rate: number; preferMale: boolean }> = {
-  rahul: { pitch: 1.04, rate: 1.03, preferMale: true },
-  judge1: { pitch: 1.12, rate: 0.96, preferMale: false },
-  judge2: { pitch: 0.92, rate: 0.94, preferMale: true },
+  rahul: { pitch: 1.02, rate: 1.03, preferMale: true },
+  judge1: { pitch: 1.05, rate: 0.98, preferMale: false },
+  judge2: { pitch: 0.95, rate: 1.02, preferMale: true },
 };
 
 let cachedVoices: SpeechSynthesisVoice[] | null = null;
@@ -62,12 +74,15 @@ function pickVoice(character: CharacterVoice): SpeechSynthesisVoice | null {
   const scored = voices
     .map((v) => {
       const name = v.name.toLowerCase();
-      const lang = v.lang.toLowerCase();
-      const isIndian = lang.includes("in") || /india|prabhat|ravi|neerja|priya/.test(name);
-      const looksMale = /male|david|mark|daniel|guy|ravi|prabhat/.test(name) && !/female/.test(name);
-      const looksFemale = /female|zira|susan|samantha|priya|neerja/.test(name);
+      const looksGuy = name.includes("guy");
+      const looksChristopher = name.includes("christopher");
+      const looksSonia = name.includes("sonia");
+      const looksMale = /male|david|mark|daniel|guy|christopher|ryan/.test(name) && !/female/.test(name);
+      const looksFemale = /female|zira|susan|samantha|sonia|jenny|aria/.test(name);
       let score = 0;
-      if (character === "rahul" && isIndian) score += 4;
+      if (character === "rahul" && looksGuy) score += 10;
+      if (character === "judge2" && looksChristopher) score += 10;
+      if (character === "judge1" && looksSonia) score += 10;
       if (tuning.preferMale && looksMale) score += 2;
       if (!tuning.preferMale && looksFemale) score += 2;
       if (v.localService) score += 1;
