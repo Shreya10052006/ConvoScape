@@ -102,6 +102,8 @@ class Wav2LipEngine:
             new_s = {k.replace("module.", ""): v for k, v in s_dict.items()}
             self.model.load_state_dict(new_s, strict=False)
             self.model.to(self.device)
+            if self.device == "cuda":
+                self.model = self.model.half()
             self.model.eval()
 
         cap = cv2.VideoCapture("/root/assets/listening.mp4")
@@ -121,11 +123,23 @@ class Wav2LipEngine:
         self.y1, self.y2, self.x1, self.x2 = 54, 159, 719, 799
         self.fw, self.fh = self.x2 - self.x1, self.y2 - self.y1
 
-        # Exact verified Gaussian blend mask
+        # Exact verified Gaussian blend mask with smooth 15x15 cheek feathering
         mask = np.zeros((self.fh, self.fw, 3), dtype=np.float32)
         cv2.ellipse(mask, (self.fw // 2, int(self.fh * 0.65)),
-                    (self.fw // 2 - 5, int(self.fh * 0.28)), 0, 0, 360, (1, 1, 1), -1)
-        self.mask_single = cv2.GaussianBlur(mask, (11, 11), 0)
+                    (int(self.fw * 0.44), int(self.fh * 0.28)), 0, 0, 360, (1, 1, 1), -1)
+        self.mask_single = cv2.GaussianBlur(mask, (15, 15), 0)
+
+        # Pre-calculate natural smile warp coordinate grid (width expansion + smooth corner curve)
+        grid_y, grid_x = np.indices((self.fh, self.fw), dtype=np.float32)
+        center_x = self.fw / 2.0
+        mouth_y_center = self.fh * 0.65
+        norm_x = (grid_x - center_x) / (self.fw / 2.0)
+        norm_y = (grid_y - mouth_y_center) / (self.fh * 0.20)
+        spatial_weight = np.exp(-(norm_x**2 + norm_y**2) / 1.6)
+        x_displacement = (grid_x - center_x) * 0.05 * spatial_weight
+        self.smile_map_x = np.clip(grid_x - x_displacement, 0, self.fw - 1).astype(np.float32)
+        corner_lift = 3.2 * (norm_x ** 2) * np.exp(-((grid_y - mouth_y_center) ** 2) / (2 * (self.fh * 0.16) ** 2))
+        self.smile_map_y = np.clip(grid_y + corner_lift, 0, self.fh - 1).astype(np.float32)
 
         self.pre_face_crops = [cv2.resize(f[self.y1:self.y2, self.x1:self.x2], (96, 96)) for f in self.full_frames]
         print(f"[Modal] Model & {len(self.full_frames)} source frames ready on GPU ({self.frame_w}x{self.frame_h} @ {self.fps} FPS)!")
@@ -142,11 +156,11 @@ class Wav2LipEngine:
         wav_path = f"/tmp/tts_{response_id}.wav"
         out_video = f"/tmp/out_{response_id}.mp4"
 
-        # 1. High-Speed 16kHz Audio Synthesis via edge-tts (en-IN-PrabhatNeural)
+        # 1. High-Speed 16kHz Audio Synthesis via edge-tts (en-US-GuyNeural)
         try:
             import asyncio
             import edge_tts
-            asyncio.run(edge_tts.Communicate(text, "en-IN-PrabhatNeural").save(audio_path))
+            asyncio.run(edge_tts.Communicate(text, "en-US-GuyNeural").save(audio_path))
         except Exception as e:
             print(f"[Modal TTS] edge-tts error, fallback to gTTS: {e}")
             tts = gTTS(text=text, lang="en", tld="us", slow=False)
@@ -195,7 +209,8 @@ class Wav2LipEngine:
         ]
         proc = subprocess.Popen(pipe_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # 5. Parallel Batch Inference on GPU
+        # 5. Parallel Batch Inference on GPU (FP16 Tensor Cores)
+        batch_size = 128
         for b_start in range(0, num_frames, batch_size):
             b_end = min(b_start + batch_size, num_frames)
             b_chunks = mel_chunks[b_start:b_end]
@@ -209,6 +224,9 @@ class Wav2LipEngine:
 
             t_img = torch.FloatTensor(np.transpose(concat_img, (0, 3, 1, 2))).to(self.device)
             t_mel = torch.FloatTensor(np.transpose(concat_mel, (0, 3, 1, 2))).to(self.device)
+            if self.device == "cuda":
+                t_img = t_img.half()
+                t_mel = t_mel.half()
 
             with torch.inference_mode():
                 pred = self.model(t_mel, t_img)
@@ -219,9 +237,13 @@ class Wav2LipEngine:
                 frame_idx = (b_start + j) % len(self.full_frames)
                 f = self.full_frames[frame_idx].copy()
                 p_uint8 = np.clip(p, 0, 255).astype(np.uint8)
-                p_resized = cv2.resize(p_uint8, (self.fw, self.fh)).astype(np.float32)
+                p_resized = cv2.resize(p_uint8, (self.fw, self.fh), interpolation=cv2.INTER_LANCZOS4).astype(np.float32)
                 orig_face = f[self.y1:self.y2, self.x1:self.x2].astype(np.float32)
-                f[self.y1:self.y2, self.x1:self.x2] = (p_resized * self.mask_single + orig_face * (1.0 - self.mask_single)).astype(np.uint8)
+
+                # Apply organic smile transform (width expansion + smooth corner curve)
+                warped_p = cv2.remap(p_resized, self.smile_map_x, self.smile_map_y, cv2.INTER_LANCZOS4)
+
+                f[self.y1:self.y2, self.x1:self.x2] = (warped_p * self.mask_single + orig_face * (1.0 - self.mask_single)).astype(np.uint8)
                 proc.stdin.write(f.tobytes())
 
         proc.stdin.close()
