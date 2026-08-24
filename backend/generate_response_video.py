@@ -48,7 +48,7 @@ def generate_tts_audio(text, audio_path):
     try:
         import asyncio
         import edge_tts
-        communicate = edge_tts.Communicate(text, "en-IN-PrabhatNeural")
+        communicate = edge_tts.Communicate(text, "en-US-GuyNeural")
         asyncio.run(communicate.save(temp_mp3))
         # Convert to 16kHz mono WAV for optimal Wav2Lip lip sync
         ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
@@ -117,14 +117,26 @@ def generate_rahul_video(response_id, text):
     fw, fh = x2 - x1, y2 - y1
     box = (y1, y2, x1, x2)
 
-    # Pre-compute Gaussian blur mask once
+    # Pre-compute Smooth Gaussian blur mask with natural cheek feathering
     mask_single = np.zeros((fh, fw, 3), dtype=np.float32)
     cv2.ellipse(mask_single, (fw // 2, int(fh * 0.65)), 
-                (fw // 2 - 5, int(fh * 0.28)), 0, 0, 360, (1, 1, 1), -1)
-    mask_single = cv2.GaussianBlur(mask_single, (11, 11), 0)
+                (int(fw * 0.44), int(fh * 0.28)), 0, 0, 360, (1, 1, 1), -1)
+    mask_single = cv2.GaussianBlur(mask_single, (15, 15), 0)
 
     # Pre-extract face crops for source frames
     pre_face_crops = [cv2.resize(f[y1:y2, x1:x2], (96, 96)) for f in full_frames]
+
+    # Pre-calculate smile warp coordinate grid
+    grid_y, grid_x = np.indices((fh, fw), dtype=np.float32)
+    center_x = fw / 2.0
+    mouth_y_center = fh * 0.65
+    norm_x = (grid_x - center_x) / (fw / 2.0)
+    norm_y = (grid_y - mouth_y_center) / (fh * 0.20)
+    spatial_weight = np.exp(-(norm_x**2 + norm_y**2) / 1.6)
+    x_displacement = (grid_x - center_x) * 0.05 * spatial_weight
+    smile_map_x = np.clip(grid_x - x_displacement, 0, fw - 1).astype(np.float32)
+    corner_lift = 3.2 * (norm_x ** 2) * np.exp(-((grid_y - mouth_y_center) ** 2) / (2 * (fh * 0.16) ** 2))
+    smile_map_y = np.clip(grid_y + corner_lift, 0, fh - 1).astype(np.float32)
 
     # 6. Align Mel Chunks
     mel_step_size = 16
@@ -175,10 +187,13 @@ def generate_rahul_video(response_id, text):
 
             for p, f in zip(pred_np, frame_batch):
                 p_uint8 = np.clip(p, 0, 255).astype(np.uint8)
-                p_resized = cv2.resize(p_uint8, (fw, fh)).astype(np.float32)
+                p_resized = cv2.resize(p_uint8, (fw, fh), interpolation=cv2.INTER_LANCZOS4).astype(np.float32)
                 orig_face = f[y1:y2, x1:x2].astype(np.float32)
 
-                blended_face = (p_resized * mask_single + orig_face * (1.0 - mask_single)).astype(np.uint8)
+                # Apply organic smile transform (width expansion + smooth corner curve)
+                warped_p = cv2.remap(p_resized, smile_map_x, smile_map_y, cv2.INTER_LANCZOS4)
+
+                blended_face = (warped_p * mask_single + orig_face * (1.0 - mask_single)).astype(np.uint8)
                 f[y1:y2, x1:x2] = blended_face
                 out.write(f)
 
