@@ -81,18 +81,32 @@ print(f"[Wav2Lip Daemon] READY! Loaded model & {len(FULL_FRAMES)} video frames. 
 FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
 
 def generate_tts_audio(text, audio_path):
-    import pythoncom
-    pythoncom.CoInitialize()
+    os.makedirs(os.path.dirname(audio_path), exist_ok=True)
+    temp_mp3 = audio_path.replace(".wav", ".mp3")
     try:
-        os.makedirs(os.path.dirname(audio_path), exist_ok=True)
-        speaker = win32com.client.Dispatch("SAPI.SpVoice")
-        stream = win32com.client.Dispatch("SAPI.SpFileStream")
-        stream.Open(audio_path, 3, False)
-        speaker.AudioOutputStream = stream
-        speaker.Speak(text, 0)
-        stream.Close()
-    finally:
-        pythoncom.CoUninitialize()
+        import asyncio
+        import edge_tts
+        communicate = edge_tts.Communicate(text, "en-US-GuyNeural")
+        asyncio.run(communicate.save(temp_mp3))
+        subprocess.run(
+            [FFMPEG_EXE, "-y", "-i", temp_mp3, "-ar", "16000", "-ac", "1", audio_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+    except Exception as e:
+        print(f"[Daemon TTS] edge-tts fallback: {e}")
+        import pythoncom
+        pythoncom.CoInitialize()
+        try:
+            speaker = win32com.client.Dispatch("SAPI.SpVoice")
+            stream = win32com.client.Dispatch("SAPI.SpFileStream")
+            stream.Open(audio_path, 3, False)
+            speaker.AudioOutputStream = stream
+            speaker.Speak(text, 0)
+            stream.Close()
+        finally:
+            pythoncom.CoUninitialize()
 
 def process_video_generation(response_id, text):
     out_video = os.path.abspath(f'public/generated/rahul-response-{response_id}.mp4')
