@@ -154,15 +154,17 @@ def generate_rahul_video(response_id: str, text: str) -> str:
     num_frames = len(mel_chunks)
     batch_size = 64
 
-    # 5. FFmpeg pipe
+    # 5. FFmpeg multi-threaded pipe
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
     pipe_cmd = [
         ffmpeg_exe, '-y',
+        '-threads', '8',
         '-f', 'rawvideo', '-vcodec', 'rawvideo',
         '-s', f'{frame_w}x{frame_h}', '-pix_fmt', 'bgr24', '-r', str(fps),
         '-i', '-',
         '-i', audio_path,
         '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+        '-threads', '8',
         '-pix_fmt', 'yuv420p',
         '-c:a', 'aac', '-b:a', '128k',
         '-shortest',

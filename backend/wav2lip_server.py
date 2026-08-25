@@ -164,14 +164,16 @@ def process_video_generation(response_id, text):
     num_frames = len(mel_chunks)
     batch_size = 64
 
-    # 4. Direct Fast Single-Pass FFmpeg Streaming Pipe
+    # 4. Direct Fast Multi-Threaded FFmpeg Streaming Pipe
     pipe_cmd = [
         FFMPEG_EXE, '-y',
+        '-threads', '8',
         '-f', 'rawvideo', '-vcodec', 'rawvideo',
         '-s', f'{FRAME_W}x{FRAME_H}', '-pix_fmt', 'bgr24', '-r', str(FPS),
         '-i', '-',
         '-i', audio_path,
         '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+        '-threads', '8',
         '-pix_fmt', 'yuv420p',
         '-c:a', 'aac', '-b:a', '128k',
         '-shortest',
