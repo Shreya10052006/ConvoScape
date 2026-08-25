@@ -20,6 +20,23 @@ if os.path.exists(torch_lib):
 site.addsitedir(r'C:\Users\Shreya\AppData\Roaming\Python\Python313\site-packages')
 site.addsitedir(site.getusersitepackages())
 
+# Import ONNX Runtime with CPU / OpenVINO optimizations
+USE_ONNX = False
+ORT_SESSION = None
+try:
+    import onnxruntime as ort  # type: ignore
+    ONNX_PATH = os.path.abspath('backend/models/wav2lip_gan.onnx')
+    if os.path.exists(ONNX_PATH):
+        sess_opts = ort.SessionOptions()
+        sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        sess_opts.intra_op_num_threads = os.cpu_count() or 8
+        sess_opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        ORT_SESSION = ort.InferenceSession(ONNX_PATH, sess_opts, providers=['CPUExecutionProvider'])
+        USE_ONNX = True
+        print(f"[Wav2Lip Daemon] Loaded optimized ONNX Runtime engine from {ONNX_PATH}!")
+except Exception as e:
+    print(f"[Wav2Lip Daemon] ONNX load notice (fallback to PyTorch): {e}")
+
 try:
     import torch  # type: ignore
     torch.set_num_threads(os.cpu_count() or 8)
@@ -41,18 +58,19 @@ except Exception:
     except Exception:
         pass
 
-print("[Wav2Lip Daemon] Pre-loading PyTorch Wav2Lip GAN model into memory...")
-CHECKPOINT_PATH = os.path.abspath('backend/models/wav2lip_gan.pth')
+# Load PyTorch model as reliable fallback if ONNX is not used
+MODEL = None
+if not USE_ONNX:
+    print("[Wav2Lip Daemon] Loading PyTorch Wav2Lip GAN model...")
+    CHECKPOINT_PATH = os.path.abspath('backend/models/wav2lip_gan.pth')
+    MODEL = Wav2Lip()
+    checkpoint = torch.load(CHECKPOINT_PATH, map_location='cpu')
+    s_dict = checkpoint.get('state_dict', {})
+    new_s = {k.replace('module.', ''): v for k, v in s_dict.items()}
+    MODEL.load_state_dict(new_s, strict=False)
+    MODEL.eval()
+
 SOURCE_VIDEO = os.path.abspath('public/assets/listening.mp4')
-
-MODEL = Wav2Lip()
-checkpoint = torch.load(CHECKPOINT_PATH, map_location='cpu')
-s_dict = checkpoint.get('state_dict', {})
-new_s = {k.replace('module.', ''): v for k, v in s_dict.items()}
-MODEL.load_state_dict(new_s, strict=False)
-MODEL.eval()
-
-# Pre-load source frames & face crops ONCE in memory
 CAP = cv2.VideoCapture(SOURCE_VIDEO)
 FPS = CAP.get(cv2.CAP_PROP_FPS) or 25.0
 FRAME_W = int(CAP.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -66,6 +84,7 @@ while True:
     FULL_FRAMES.append(frame)
 CAP.release()
 
+# Pre-compute face coordinates and blending masks ONCE
 Y1, Y2, X1, X2 = 54, 159, 719, 799
 FW, FH = X2 - X1, Y2 - Y1
 
@@ -73,10 +92,14 @@ MASK_SINGLE = np.zeros((FH, FW, 3), dtype=np.float32)
 cv2.ellipse(MASK_SINGLE, (FW // 2, int(FH * 0.65)), 
             (FW // 2 - 5, int(FH * 0.28)), 0, 0, 360, (1, 1, 1), -1)
 MASK_SINGLE = cv2.GaussianBlur(MASK_SINGLE, (11, 11), 0)
+INVERSE_MASK = (1.0 - MASK_SINGLE).astype(np.float32)
 
 PRE_FACE_CROPS = [cv2.resize(f[Y1:Y2, X1:X2], (96, 96)) for f in FULL_FRAMES]
 
-print(f"[Wav2Lip Daemon] READY! Loaded model & {len(FULL_FRAMES)} video frames. Standing by on port 5001...")
+# Pre-allocated zero-copy reusable frame buffer
+OUT_FRAME_BUFFER = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8)
+
+print(f"[Wav2Lip Daemon] READY! Engine: {'ONNX-Fast' if USE_ONNX else 'PyTorch'} & {len(FULL_FRAMES)} video frames. Standing by on port 5001...")
 
 FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
 
@@ -119,6 +142,7 @@ def process_video_generation(response_id, text):
 
     # 1. Fast TTS Audio Generation
     generate_tts_audio(text, audio_path)
+    tts_time = time.perf_counter() - start_time
 
     # 2. Process Mel Spectrogram
     wav = audio.load_wav(audio_path, 16000)
@@ -140,7 +164,7 @@ def process_video_generation(response_id, text):
     num_frames = len(mel_chunks)
     batch_size = 64
 
-    # 4. Direct Fast Single-Pass FFmpeg Streaming Pipe (No temporary AVI disk I/O)
+    # 4. Direct Fast Single-Pass FFmpeg Streaming Pipe
     pipe_cmd = [
         FFMPEG_EXE, '-y',
         '-f', 'rawvideo', '-vcodec', 'rawvideo',
@@ -156,7 +180,9 @@ def process_video_generation(response_id, text):
     ]
     proc = subprocess.Popen(pipe_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    # 5. Batch Inference with torch.inference_mode()
+    infer_start = time.perf_counter()
+
+    # 5. Batch Inference with ONNX Runtime or PyTorch
     for b_start in range(0, num_frames, batch_size):
         b_end = min(b_start + batch_size, num_frames)
         b_chunks = mel_chunks[b_start:b_end]
@@ -165,38 +191,52 @@ def process_video_generation(response_id, text):
         img_masked = img_batch.copy()
         img_masked[:, 48:] = 0
 
-        concat_img = np.concatenate((img_masked, img_batch), axis=3) / 255.0
-        concat_mel = np.reshape(b_chunks, [len(b_chunks), 80, 16, 1])
+        concat_img = (np.concatenate((img_masked, img_batch), axis=3) / 255.0).astype(np.float32)
+        concat_mel = np.reshape(b_chunks, [len(b_chunks), 80, 16, 1]).astype(np.float32)
 
-        t_img = torch.FloatTensor(np.transpose(concat_img, (0, 3, 1, 2)))
-        t_mel = torch.FloatTensor(np.transpose(concat_mel, (0, 3, 1, 2)))
+        np_img = np.transpose(concat_img, (0, 3, 1, 2))
+        np_mel = np.transpose(concat_mel, (0, 3, 1, 2))
 
-        with torch.inference_mode():
-            pred = MODEL(t_mel, t_img)
+        if USE_ONNX and ORT_SESSION is not None:
+            ort_inputs = {'audio_mel': np_mel, 'face_img': np_img}
+            ort_out = ORT_SESSION.run(None, ort_inputs)
+            pred_np = np.transpose(ort_out[0], (0, 2, 3, 1)) * 255.0
+        else:
+            t_img = torch.FloatTensor(np_img)
+            t_mel = torch.FloatTensor(np_mel)
+            with torch.inference_mode():
+                pred = MODEL(t_mel, t_img)
+            pred_np = pred.numpy().transpose(0, 2, 3, 1) * 255.0
 
-        pred_np = pred.numpy().transpose(0, 2, 3, 1) * 255.0
-
+        # In-place blending into zero-copy frame buffer
         for j, p in enumerate(pred_np):
             frame_idx = (b_start + j) % len(FULL_FRAMES)
-            f = FULL_FRAMES[frame_idx].copy()
+            src_frame = FULL_FRAMES[frame_idx]
+            
+            # Copy base frame into reusable buffer
+            np.copyto(OUT_FRAME_BUFFER, src_frame)
+            
             p_uint8 = np.clip(p, 0, 255).astype(np.uint8)
             p_resized = cv2.resize(p_uint8, (FW, FH)).astype(np.float32)
-            orig_face = f[Y1:Y2, X1:X2].astype(np.float32)
-            f[Y1:Y2, X1:X2] = (p_resized * MASK_SINGLE + orig_face * (1.0 - MASK_SINGLE)).astype(np.uint8)
-            proc.stdin.write(f.tobytes())
+            orig_face = src_frame[Y1:Y2, X1:X2].astype(np.float32)
+            
+            # Blend face directly into buffer
+            OUT_FRAME_BUFFER[Y1:Y2, X1:X2] = (p_resized * MASK_SINGLE + orig_face * INVERSE_MASK).astype(np.uint8)
+            proc.stdin.write(OUT_FRAME_BUFFER.tobytes())
 
     proc.stdin.close()
     proc.wait()
 
-    elapsed = time.perf_counter() - start_time
-    print(f"[Wav2Lip Daemon] ULTRA-FAST GENERATION SUCCESS: {num_frames} frames -> {out_video} in {elapsed:.2f}s!")
+    infer_time = time.perf_counter() - infer_start
+    total_time = time.perf_counter() - start_time
+    print(f"[Wav2Lip Server] Generated {num_frames} frames ({num_frames/FPS:.1f}s audio) in {total_time:.2f}s (TTS: {tts_time:.2f}s, Inference: {infer_time:.2f}s, Engine: {'ONNX' if USE_ONNX else 'PyTorch'})")
     return out_video
 
 class RequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        content_length = int(self.headers.get('Content-Length', 0))
-        body_bytes = self.rfile.read(content_length)
         try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body_bytes = self.rfile.read(content_length)
             req_data = json.loads(body_bytes.decode('utf-8'))
             response_id = req_data.get('responseId')
             text = req_data.get('text')
