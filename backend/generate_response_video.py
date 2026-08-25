@@ -3,6 +3,9 @@ import sys
 import time
 import subprocess
 import site
+import cv2
+import numpy as np
+import imageio_ffmpeg
 
 # PyTorch Windows DLL configuration
 torch_lib = r'C:\Users\Shreya\AppData\Roaming\Python\Python313\site-packages\torch\lib'
@@ -15,13 +18,26 @@ if os.path.exists(torch_lib):
 site.addsitedir(r'C:\Users\Shreya\AppData\Roaming\Python\Python313\site-packages')
 site.addsitedir(site.getusersitepackages())
 
+# Import ONNX Runtime with CPU optimizations
+USE_ONNX = False
+ORT_SESSION = None
 try:
-    import cv2  # type: ignore # pyright: ignore
-    import numpy as np  # type: ignore # pyright: ignore
-    import imageio_ffmpeg  # type: ignore # pyright: ignore
-    import torch  # type: ignore # pyright: ignore
-    torch.set_num_threads(4)
-    import win32com.client  # type: ignore # pyright: ignore
+    import onnxruntime as ort  # type: ignore
+    ONNX_PATH = os.path.abspath('backend/models/wav2lip_gan.onnx')
+    if os.path.exists(ONNX_PATH):
+        sess_opts = ort.SessionOptions()
+        sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        sess_opts.intra_op_num_threads = os.cpu_count() or 8
+        sess_opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        ORT_SESSION = ort.InferenceSession(ONNX_PATH, sess_opts, providers=['CPUExecutionProvider'])
+        USE_ONNX = True
+except Exception:
+    pass
+
+try:
+    import torch  # type: ignore
+    torch.set_num_threads(os.cpu_count() or 8)
+    import win32com.client  # type: ignore
 except Exception:
     pass
 
@@ -31,16 +47,24 @@ if wav2lip_dir not in sys.path:
     sys.path.insert(0, wav2lip_dir)
 
 try:
-    import audio  # type: ignore # pyright: ignore
-    import face_detection  # type: ignore # pyright: ignore
-    from models import Wav2Lip  # type: ignore # pyright: ignore
+    import audio  # type: ignore
+    from models import Wav2Lip  # type: ignore
 except Exception:
     try:
-        from backend.Wav2Lip import audio  # type: ignore # pyright: ignore
-        from backend.Wav2Lip import face_detection  # type: ignore # pyright: ignore
-        from backend.Wav2Lip.models import Wav2Lip  # type: ignore # pyright: ignore
+        from backend.Wav2Lip import audio  # type: ignore
+        from backend.Wav2Lip.models import Wav2Lip  # type: ignore
     except Exception:
         pass
+
+MODEL = None
+if not USE_ONNX:
+    checkpoint_path = os.path.abspath('backend/models/wav2lip_gan.pth')
+    MODEL = Wav2Lip()
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    s_dict = checkpoint.get('state_dict', {})
+    new_s = {k.replace('module.', ''): v for k, v in s_dict.items()}
+    MODEL.load_state_dict(new_s, strict=False)
+    MODEL.eval()
 
 def generate_tts_audio(text, audio_path):
     os.makedirs(os.path.dirname(audio_path), exist_ok=True)
@@ -50,7 +74,6 @@ def generate_tts_audio(text, audio_path):
         import edge_tts
         communicate = edge_tts.Communicate(text, "en-US-GuyNeural")
         asyncio.run(communicate.save(temp_mp3))
-        # Convert to 16kHz mono WAV for optimal Wav2Lip lip sync
         ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
         subprocess.run(
             [ffmpeg_exe, "-y", "-i", temp_mp3, "-ar", "16000", "-ac", "1", audio_path],
@@ -58,52 +81,43 @@ def generate_tts_audio(text, audio_path):
             stderr=subprocess.DEVNULL,
             check=True,
         )
-        if os.path.exists(temp_mp3):
-            os.remove(temp_mp3)
     except Exception as e:
-        print(f"[TTS] edge-tts error, falling back to SAPI: {e}")
-        speaker = win32com.client.Dispatch("SAPI.SpVoice")
-        stream = win32com.client.Dispatch("SAPI.SpFileStream")
-        stream.Open(audio_path, 3, False)
-        speaker.AudioOutputStream = stream
-        speaker.Speak(text)
-        stream.Close()
+        print(f"[Generate TTS] edge-tts fallback: {e}")
+        import pythoncom
+        pythoncom.CoInitialize()
+        try:
+            speaker = win32com.client.Dispatch("SAPI.SpVoice")
+            stream = win32com.client.Dispatch("SAPI.SpFileStream")
+            stream.Open(audio_path, 3, False)
+            speaker.AudioOutputStream = stream
+            speaker.Speak(text, 0)
+            stream.Close()
+        finally:
+            pythoncom.CoUninitialize()
 
-def generate_rahul_video(response_id, text):
+def generate_rahul_video(response_id: str, text: str) -> str:
     out_video = os.path.abspath(f'public/generated/rahul-response-{response_id}.mp4')
     if os.path.exists(out_video):
-        print(f"EXISTS: {out_video}")
         return out_video
 
-    start_time = time.perf_counter()
-    checkpoint_path = os.path.abspath('backend/models/wav2lip_gan.pth')
-    source_video = os.path.abspath('public/assets/listening.mp4')
+    t0 = time.perf_counter()
     audio_path = os.path.abspath(f'public/generated/tts-{response_id}.wav')
-    temp_avi = os.path.abspath(f'backend/temp_{response_id}.avi')
-
     os.makedirs('public/generated', exist_ok=True)
 
-    # 1. Generate Audio
+    # 1. TTS Generation
     generate_tts_audio(text, audio_path)
 
-    # 2. Load Model
-    model = Wav2Lip()
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    s_dict = checkpoint.get('state_dict', {})
-    new_s = {k.replace('module.', ''): v for k, v in s_dict.items()}
-    model.load_state_dict(new_s, strict=False)
-    model.eval()
-
-    # 3. Process Mel Spectrogram
+    # 2. Audio Processing
     wav = audio.load_wav(audio_path, 16000)
     mel = audio.melspectrogram(wav)
 
-    # 4. Read Source Frames (Cached in memory/disk)
+    # 3. Source Video & Coordinates
+    source_video = os.path.abspath('public/assets/listening.mp4')
     cap = cv2.VideoCapture(source_video)
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
+    
     full_frames = []
     while True:
         ret, frame = cap.read()
@@ -112,33 +126,19 @@ def generate_rahul_video(response_id, text):
         full_frames.append(frame)
     cap.release()
 
-    # 5. Verified Official Bounding Box: (x1=719, y1=54, x2=799, y2=159)
     y1, y2, x1, x2 = 54, 159, 719, 799
     fw, fh = x2 - x1, y2 - y1
-    box = (y1, y2, x1, x2)
 
-    # Pre-compute Smooth Gaussian blur mask with natural cheek feathering
     mask_single = np.zeros((fh, fw, 3), dtype=np.float32)
     cv2.ellipse(mask_single, (fw // 2, int(fh * 0.65)), 
-                (int(fw * 0.44), int(fh * 0.28)), 0, 0, 360, (1, 1, 1), -1)
-    mask_single = cv2.GaussianBlur(mask_single, (15, 15), 0)
+                (fw // 2 - 5, int(fh * 0.28)), 0, 0, 360, (1, 1, 1), -1)
+    mask_single = cv2.GaussianBlur(mask_single, (11, 11), 0)
+    inv_mask = (1.0 - mask_single).astype(np.float32)
 
-    # Pre-extract face crops for source frames
     pre_face_crops = [cv2.resize(f[y1:y2, x1:x2], (96, 96)) for f in full_frames]
+    out_buffer = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
 
-    # Pre-calculate smile warp coordinate grid
-    grid_y, grid_x = np.indices((fh, fw), dtype=np.float32)
-    center_x = fw / 2.0
-    mouth_y_center = fh * 0.65
-    norm_x = (grid_x - center_x) / (fw / 2.0)
-    norm_y = (grid_y - mouth_y_center) / (fh * 0.20)
-    spatial_weight = np.exp(-(norm_x**2 + norm_y**2) / 1.6)
-    x_displacement = (grid_x - center_x) * 0.05 * spatial_weight
-    smile_map_x = np.clip(grid_x - x_displacement, 0, fw - 1).astype(np.float32)
-    corner_lift = 3.2 * (norm_x ** 2) * np.exp(-((grid_y - mouth_y_center) ** 2) / (2 * (fh * 0.16) ** 2))
-    smile_map_y = np.clip(grid_y + corner_lift, 0, fh - 1).astype(np.float32)
-
-    # 6. Align Mel Chunks
+    # 4. Mel Chunks
     mel_step_size = 16
     mel_chunks = []
     mel_idx_multiplier = 80.0 / fps
@@ -151,86 +151,72 @@ def generate_rahul_video(response_id, text):
         mel_chunks.append(mel[:, start_idx : start_idx + mel_step_size])
         i += 1
 
-    # 7. Batch Inference
+    num_frames = len(mel_chunks)
     batch_size = 64
-    img_batch, mel_batch, frame_batch = [], [], []
 
-    fourcc = cv2.VideoWriter_fourcc(*'DIVX')
-    out = cv2.VideoWriter(temp_avi, fourcc, fps, (frame_w, frame_h))
+    # 5. FFmpeg pipe
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    pipe_cmd = [
+        ffmpeg_exe, '-y',
+        '-f', 'rawvideo', '-vcodec', 'rawvideo',
+        '-s', f'{frame_w}x{frame_h}', '-pix_fmt', 'bgr24', '-r', str(fps),
+        '-i', '-',
+        '-i', audio_path,
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '128k',
+        '-shortest',
+        '-movflags', '+faststart',
+        out_video
+    ]
+    proc = subprocess.Popen(pipe_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    for i, m in enumerate(mel_chunks):
-        idx = i % len(full_frames)
-        frame_to_save = full_frames[idx].copy()
-        face_resized = pre_face_crops[idx]
+    for b_start in range(0, num_frames, batch_size):
+        b_end = min(b_start + batch_size, num_frames)
+        b_chunks = mel_chunks[b_start:b_end]
 
-        img_batch.append(face_resized)
-        mel_batch.append(m)
-        frame_batch.append(frame_to_save)
+        img_batch = np.array([pre_face_crops[idx % len(full_frames)] for idx in range(b_start, b_end)])
+        img_masked = img_batch.copy()
+        img_masked[:, 48:] = 0
 
-        if len(img_batch) >= batch_size or i == len(mel_chunks) - 1:
-            arr_img = np.asarray(img_batch)
-            arr_mel = np.asarray(mel_batch)
+        concat_img = (np.concatenate((img_masked, img_batch), axis=3) / 255.0).astype(np.float32)
+        concat_mel = np.reshape(b_chunks, [len(b_chunks), 80, 16, 1]).astype(np.float32)
 
-            img_masked = arr_img.copy()
-            img_masked[:, 48:] = 0
+        np_img = np.transpose(concat_img, (0, 3, 1, 2))
+        np_mel = np.transpose(concat_mel, (0, 3, 1, 2))
 
-            concat_img = np.concatenate((img_masked, arr_img), axis=3) / 255.0
-            concat_mel = np.reshape(arr_mel, [len(arr_mel), arr_mel.shape[1], arr_mel.shape[2], 1])
+        if USE_ONNX and ORT_SESSION is not None:
+            ort_inputs = {'audio_mel': np_mel, 'face_img': np_img}
+            ort_out = ORT_SESSION.run(None, ort_inputs)
+            pred_np = np.transpose(ort_out[0], (0, 2, 3, 1)) * 255.0
+        else:
+            t_img = torch.FloatTensor(np_img)
+            t_mel = torch.FloatTensor(np_mel)
+            with torch.inference_mode():
+                pred = MODEL(t_mel, t_img)
+            pred_np = pred.numpy().transpose(0, 2, 3, 1) * 255.0
 
-            t_img = torch.FloatTensor(np.transpose(concat_img, (0, 3, 1, 2)))
-            t_mel = torch.FloatTensor(np.transpose(concat_mel, (0, 3, 1, 2)))
+        for j, p in enumerate(pred_np):
+            frame_idx = (b_start + j) % len(full_frames)
+            src_frame = full_frames[frame_idx]
+            np.copyto(out_buffer, src_frame)
+            
+            p_uint8 = np.clip(p, 0, 255).astype(np.uint8)
+            p_resized = cv2.resize(p_uint8, (fw, fh)).astype(np.float32)
+            orig_face = src_frame[y1:y2, x1:x2].astype(np.float32)
+            
+            out_buffer[y1:y2, x1:x2] = (p_resized * mask_single + orig_face * inv_mask).astype(np.uint8)
+            proc.stdin.write(out_buffer.tobytes())
 
-            with torch.no_grad():
-                pred = model(t_mel, t_img)
+    proc.stdin.close()
+    proc.wait()
 
-            pred_np = pred.cpu().numpy().transpose(0, 2, 3, 1) * 255.0
+    elapsed = time.perf_counter() - t0
+    print(f"[Generate] Completed in {elapsed:.2f}s (Engine: {'ONNX' if USE_ONNX else 'PyTorch'}) -> {out_video}")
+    return out_video
 
-            for p, f in zip(pred_np, frame_batch):
-                p_uint8 = np.clip(p, 0, 255).astype(np.uint8)
-                p_resized = cv2.resize(p_uint8, (fw, fh), interpolation=cv2.INTER_LANCZOS4).astype(np.float32)
-                orig_face = f[y1:y2, x1:x2].astype(np.float32)
-
-                # Apply organic smile transform (width expansion + smooth corner curve)
-                warped_p = cv2.remap(p_resized, smile_map_x, smile_map_y, cv2.INTER_LANCZOS4)
-
-                blended_face = (warped_p * mask_single + orig_face * (1.0 - mask_single)).astype(np.uint8)
-                f[y1:y2, x1:x2] = blended_face
-                out.write(f)
-
-            img_batch, mel_batch, frame_batch = [], [], []
-
-    out.release()
-
-    try:
-        # 8. Encode with FFmpeg (H.264 + AAC + yuv420p + faststart)
-        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-        cmd = [
-            ffmpeg_exe, '-y',
-            '-i', temp_avi,
-            '-i', audio_path,
-            '-c:v', 'libx264',
-            '-pix_fmt', 'yuv420p',
-            '-c:a', 'aac',
-            '-shortest',
-            '-movflags', '+faststart',
-            out_video
-        ]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-        elapsed = time.perf_counter() - start_time
-        print(f"SUCCESS: {out_video} (Time: {elapsed:.2f}s)")
-        return out_video
-    finally:
-        if os.path.exists(temp_avi):
-            try:
-                os.remove(temp_avi)
-            except Exception:
-                pass
-
-if __name__ == "__main__":
-    if len(sys.argv) >= 3:
-        resp_id = sys.argv[1]
-        txt = " ".join(sys.argv[2:])
-        generate_rahul_video(resp_id, txt)
+if __name__ == '__main__':
+    if len(sys.argv) > 2:
+        generate_rahul_video(sys.argv[1], sys.argv[2])
     else:
-        generate_rahul_video("test-init", "Hello! I am Rahul and welcome to ConvoScape.")
+        print("Usage: python generate_response_video.py <response_id> <text>")
