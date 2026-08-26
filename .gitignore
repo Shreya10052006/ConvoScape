@@ -10,6 +10,9 @@ public/generated/*
 !public/generated/rahul-response-rahul-q5.mp4
 !public/generated/rahul-response-rahul-q7.mp4
 !public/generated/rahul-response-rahul-q9.mp4
+!public/generated/rahul-response-rahul-filler-1.mp4
+!public/generated/rahul-response-rahul-filler-2.mp4
+!public/generated/rahul-response-rahul-filler-3.mp4
 !public/generated/rahul-response-turn-farewell.mp4
 backend/temp_*.avi
 backend/test_*.wav

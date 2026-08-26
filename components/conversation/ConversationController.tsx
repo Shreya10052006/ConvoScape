@@ -3,22 +3,12 @@
 /**
  * ConversationController.tsx
  * ---------------------------------------------------------------------------
- * Drives ONE conversation phase. It does not know where anyone is standing
- * (scene state) or whether the camera is on (camera state) — only whose turn it
- * is, what was said, and what should be said next. That boundary is what stops
- * a Gemini timeout from stranding Rahul mid-stride and a dropped animation
- * frame from losing a user's answer.
+ * Zero-Latency Interleaved Prefetch Conversation Controller for ConvoScape.
  *
- * TWO RULES ENFORCED HERE THAT ARE EASY TO GET WRONG:
- *
- * 1. ONLY CHARACTER_DIALOGUE IS EVER SPOKEN. System notices ("Take your time",
- *    "Your presentation has started") are UI text. They're pushed through
- *    `showSystem()`, which never touches speak(). The TTS call site reads from
- *    exactly one place so the two can't be confused.
- *
- * 2. THE MIC IS HARD-MUTED WHILE A CHARACTER TALKS. Recognition starts only on
- *    the TTS `end` event, never on a timer, because the recogniser will happily
- *    transcribe the synthesiser through the speakers otherwise.
+ * Sequence:
+ * Intro (pre-gen) -> Q1 (pre-gen) -> Q2 (tailored) -> Q3 (pre-gen) ->
+ * Q4 (tailored) -> Q5 (pre-gen) -> Q6 (tailored) -> Q7 (pre-gen) ->
+ * Q8 (tailored) -> Q9 (pre-gen) -> Q10 (tailored) -> Farewell (pre-gen).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -30,7 +20,6 @@ import {
 import { speak, stopSpeaking, type CharacterVoice } from "@/lib/speech/speechSynthesis";
 import {
   PRESENTATION_SECONDS,
-  STAGE_TURN_TARGET,
   newTurnId,
   type ConversationStage,
   type ProjectContext,
@@ -38,13 +27,11 @@ import {
   type TranscriptTurn,
 } from "@/lib/session/sessionTypes";
 import type { DialoguePhase } from "@/lib/session/dialogueMachine";
-import type { ValidatedTurn } from "@/lib/ai/schemas";
 import type { InterruptionTracker } from "@/lib/speech/interruptionTracker";
 import VoiceIndicator from "./VoiceIndicator";
 import TranscriptOverlay from "./TranscriptOverlay";
 import PresentationTimer from "./PresentationTimer";
 
-/** How long to let the user sit in silence before a gentle, unspoken nudge. */
 const IDLE_NUDGE_MS = 20_000;
 
 interface Props {
@@ -56,7 +43,6 @@ interface Props {
   onTurn: (turn: TranscriptTurn) => void;
   onTopic: (topic: string) => void;
   onStageComplete: () => void;
-  /** Shared across phases so counts accumulate over the whole session. */
   interruptions?: InterruptionTracker;
   onVisualStateChange?: (state: "SPEAKING" | "LISTENING" | "IDLE") => void;
   onRahulVideoGenerated?: (url: string) => void;
@@ -65,6 +51,63 @@ interface Props {
 }
 
 type LocalStatus = "idle" | "requesting" | "speaking" | "listening" | "typing" | "presenting" | "error";
+
+interface PrefetchedSlot {
+  questionNum: 2 | 4 | 6 | 8 | 10;
+  status: "IDLE" | "GENERATING" | "READY" | "PLAYING" | "ERROR";
+  reply?: string;
+  topicCovered?: string;
+  videoUrl?: string;
+  promise?: Promise<void>;
+}
+
+// 5 Fixed Pre-Generated Anchor Questions
+const FIXED_QUESTIONS: Record<1 | 3 | 5 | 7 | 9, { text: string; videoUrl: string; topic: string }> = {
+  1: {
+    text: "So, what are you guys working on? I’ve been seeing so many different projects around here, so I’m curious — what’s yours about, and what made you guys decide to build it?",
+    videoUrl: "/generated/rahul-response-rahul-q1.mp4",
+    topic: "project overview",
+  },
+  3: {
+    text: "Yeah, I get what you mean. One thing I always find interesting with hackathon projects is how different the idea sounds compared to actually using it. If you had to show this to someone who knew nothing about it, what would you want them to understand first?",
+    videoUrl: "/generated/rahul-response-rahul-q3.mp4",
+    topic: "user perspective",
+  },
+  5: {
+    text: "By the way, I always get curious about the tech side of these projects. When you guys were actually building this, what part ended up being more difficult than you expected?",
+    videoUrl: "/generated/rahul-response-rahul-q5.mp4",
+    topic: "technical hurdles",
+  },
+  7: {
+    text: "Okay, random question — if you guys actually got another month to keep working on this after the hackathon, what would you change or add first?",
+    videoUrl: "/generated/rahul-response-rahul-q7.mp4",
+    topic: "future roadmap",
+  },
+  9: {
+    text: "Honestly, after working on it and talking about it this much, what’s the one part of your project you’re most excited to show someone?",
+    videoUrl: "/generated/rahul-response-rahul-q9.mp4",
+    topic: "favorite highlight",
+  },
+};
+
+const INTRO_TURN = {
+  text: "Hey! I was just walking around checking out other tables. I'm Rahul, 3rd year CS from RV College. What's your name, and where are you guys from?",
+  videoUrl: "/generated/rahul-response-turn1-opening.mp4",
+  topic: "intro",
+};
+
+const FAREWELL_TURN = {
+  text: "That sounds seriously awesome! Best of luck with the demo — I heard the judges are starting their rounds in a few hours, so make sure you're ready. I gotta run back to my table to finish our deployment. Catch you later!",
+  videoUrl: "/generated/rahul-response-turn-farewell.mp4",
+  topic: "farewell",
+};
+
+// 3 Short Peer Reaction Filler Clips (1.5-2 seconds each)
+const FILLER_VIDEOS = [
+  { text: "Ah, got it.", videoUrl: "/generated/rahul-response-rahul-filler-1.mp4" },
+  { text: "Hmm, okay, makes sense.", videoUrl: "/generated/rahul-response-rahul-filler-2.mp4" },
+  { text: "Right, that's interesting.", videoUrl: "/generated/rahul-response-rahul-filler-3.mp4" },
+];
 
 export default function ConversationController({
   active,
@@ -91,6 +134,25 @@ export default function ConversationController({
   const [micUnavailable, setMicUnavailable] = useState(false);
   const [presentationEndsAt, setPresentationEndsAt] = useState<number | null>(null);
 
+  // Current Step in Rahul's sequence: 0=Intro, 1=Q1, 2=Q2, ..., 10=Q10, 11=Farewell
+  const currentStepRef = useRef<number>(0);
+  // Store user answers indexed by question number (1..10)
+  const answersRef = useRef<Record<number, string>>({});
+  // Prefetch slots for tailored turns (Q2, Q4, Q6, Q8, Q10)
+  const prefetchSlotsRef = useRef<Record<number, PrefetchedSlot>>({
+    2: { questionNum: 2, status: "IDLE" },
+    4: { questionNum: 4, status: "IDLE" },
+    6: { questionNum: 6, status: "IDLE" },
+    8: { questionNum: 8, status: "IDLE" },
+    10: { questionNum: 10, status: "IDLE" },
+  });
+
+  const recognitionRef = useRef<SpeechRecognitionHandle | null>(null);
+  const idleTimerRef = useRef<number | null>(null);
+  const beginListeningRef = useRef<() => void>(() => {});
+
+  const speechSupported = isSpeechRecognitionSupported();
+
   useEffect(() => {
     if (!active) return;
     if (status === "speaking") {
@@ -102,17 +164,6 @@ export default function ConversationController({
     }
   }, [active, status, onVisualStateChange]);
 
-  const recognitionRef = useRef<SpeechRecognitionHandle | null>(null);
-  const answersThisStageRef = useRef(0);
-  const openedForStageRef = useRef<string | null>(null);
-  const idleTimerRef = useRef<number | null>(null);
-  const lastRequestRef = useRef<{ userAnswer?: string; isFinalTurn?: boolean }>({});
-  const beginListeningRef = useRef<() => void>(() => {});
-
-  const target = STAGE_TURN_TARGET[stage];
-  const speechSupported = isSpeechRecognitionSupported();
-
-  /** SYSTEM_MESSAGE path — visible, never spoken. */
   const showSystem = useCallback((text: string, persistMs = 5000) => {
     setSystemNotice(text);
     window.setTimeout(() => setSystemNotice((cur) => (cur === text ? null : cur)), persistMs);
@@ -124,6 +175,301 @@ export default function ConversationController({
       idleTimerRef.current = null;
     }
   }, []);
+
+  /**
+   * Trigger background generation of a tailored question + TTS + Wav2Lip video.
+   */
+  const triggerPrefetch = useCallback(
+    (qNum: 2 | 4 | 6 | 8 | 10) => {
+      const slot = prefetchSlotsRef.current[qNum];
+      if (!slot || slot.status === "GENERATING" || slot.status === "READY") return;
+
+      slot.status = "GENERATING";
+
+      // Assemble strict context boundary for this tailored question
+      const allowedAnswers: Array<{ questionNum: number; answer: string }> = [];
+      if (qNum >= 4) {
+        if (answersRef.current[1]) allowedAnswers.push({ questionNum: 1, answer: answersRef.current[1] });
+        if (answersRef.current[2]) allowedAnswers.push({ questionNum: 2, answer: answersRef.current[2] });
+      }
+      if (qNum >= 6) {
+        if (answersRef.current[3]) allowedAnswers.push({ questionNum: 3, answer: answersRef.current[3] });
+        if (answersRef.current[4]) allowedAnswers.push({ questionNum: 4, answer: answersRef.current[4] });
+      }
+      if (qNum >= 8) {
+        if (answersRef.current[5]) allowedAnswers.push({ questionNum: 5, answer: answersRef.current[5] });
+        if (answersRef.current[6]) allowedAnswers.push({ questionNum: 6, answer: answersRef.current[6] });
+      }
+      if (qNum >= 10) {
+        if (answersRef.current[7]) allowedAnswers.push({ questionNum: 7, answer: answersRef.current[7] });
+        if (answersRef.current[8]) allowedAnswers.push({ questionNum: 8, answer: answersRef.current[8] });
+      }
+
+      console.log(`[Prefetch Queue] Starting background generation for Q${qNum} with ${allowedAnswers.length} prior answers...`);
+
+      const genPromise = (async () => {
+        try {
+          // 1. Fetch Tailored Question from Gemini
+          const turnRes = await fetch("/api/conversation/tailored", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              questionNumber: qNum,
+              project,
+              allowedAnswers,
+            }),
+          });
+          const turnData = await turnRes.json();
+          const replyText = turnData.reply || `What made you choose this architecture for ${project.name}?`;
+          const topic = turnData.topicCovered || `tailored-q${qNum}`;
+
+          slot.reply = replyText;
+          slot.topicCovered = topic;
+
+          // 2. Render Wav2Lip Video in Background Daemon
+          let textHash = 0;
+          for (let i = 0; i < replyText.length; i++) {
+            textHash = ((textHash << 5) - textHash + replyText.charCodeAt(i)) | 0;
+          }
+          const hashStr = Math.abs(textHash).toString(36);
+          const videoId = `tailored-q${qNum}-${hashStr}`;
+
+          const vidRes = await fetch("/api/generate-video", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ responseId: videoId, text: replyText }),
+          });
+          const vidData = await vidRes.json();
+
+          if (vidRes.ok && vidData.videoUrl) {
+            slot.videoUrl = vidData.videoUrl;
+            slot.status = "READY";
+            console.log(`[Prefetch Queue] Q${qNum} video is READY in background cache: ${vidData.videoUrl}`);
+          } else {
+            console.warn(`[Prefetch Queue] Video generation returned non-ok for Q${qNum}, marked ready with TTS fallback.`);
+            slot.status = "READY";
+          }
+        } catch (err) {
+          console.warn(`[Prefetch Queue] Background prefetch error for Q${qNum}:`, err);
+          slot.status = "READY"; // Still ready so state machine won't hang; uses fallback TTS
+        }
+      })();
+
+      slot.promise = genPromise;
+    },
+    [project]
+  );
+
+  /**
+   * Play a character turn with video, or graceful TTS fallback over listening.mp4.
+   */
+  const playCharacterTurn = useCallback(
+    (text: string, topic: string, videoUrl?: string, onEnded?: () => void) => {
+      onTurn({
+        id: newTurnId(),
+        speaker: "rahul",
+        text,
+        stage,
+        kind: "CHARACTER_DIALOGUE",
+        endTime: performance.now(),
+      });
+      onTopic(topic);
+
+      setStatus("speaking");
+      setCaption(text);
+      setCaptionSpeaker("rahul");
+      onVisualStateChange?.("SPEAKING");
+
+      const cleanupAndProceed = () => {
+        registerVideoEndCallback?.(null);
+        registerVideoErrorCallback?.(null);
+        setCaption("");
+        setCaptionSpeaker(null);
+        onVisualStateChange?.("LISTENING");
+        if (onEnded) onEnded();
+      };
+
+      const fallbackTTS = () => {
+        console.warn("[ConversationController] Video unavailable, using TTS audio over listening.mp4.");
+        registerVideoEndCallback?.(null);
+        registerVideoErrorCallback?.(null);
+        speak(text, {
+          character: "rahul",
+          onStart: () => interruptions?.characterSpeechStarted(),
+          onEnd: () => {
+            interruptions?.characterSpeechEnded();
+            cleanupAndProceed();
+          },
+          onError: () => {
+            interruptions?.characterSpeechEnded();
+            window.setTimeout(cleanupAndProceed, 1200);
+          },
+        });
+      };
+
+      if (videoUrl) {
+        registerVideoErrorCallback?.(fallbackTTS);
+        registerVideoEndCallback?.(cleanupAndProceed);
+        onRahulVideoGenerated?.(videoUrl);
+      } else {
+        fallbackTTS();
+      }
+    },
+    [onTurn, onTopic, stage, onVisualStateChange, registerVideoEndCallback, registerVideoErrorCallback, onRahulVideoGenerated, interruptions]
+  );
+
+  /**
+   * Advance through the 12 conversation steps.
+   */
+  const executeStep = useCallback(
+    async (step: number) => {
+      currentStepRef.current = step;
+
+      // --- STEP 0: INTRO VIDEO (Pre-generated) ---
+      if (step === 0) {
+        // Kick off Q2 generation immediately from questionnaire!
+        triggerPrefetch(2);
+
+        playCharacterTurn(INTRO_TURN.text, INTRO_TURN.topic, INTRO_TURN.videoUrl, () => {
+          beginListeningRef.current();
+        });
+        return;
+      }
+
+      // --- STEP 1: Q1 (Pre-generated) ---
+      if (step === 1) {
+        const q = FIXED_QUESTIONS[1];
+        playCharacterTurn(q.text, q.topic, q.videoUrl, () => {
+          beginListeningRef.current();
+        });
+        return;
+      }
+
+      // --- STEP 2: Q2 (Tailored - already ready from setup/intro) ---
+      if (step === 2) {
+        const slot = prefetchSlotsRef.current[2];
+        if (slot.status === "GENERATING" && slot.promise) {
+          const filler = FILLER_VIDEOS[0];
+          playCharacterTurn(filler.text, "acknowledgement", filler.videoUrl);
+          await slot.promise;
+        }
+        const text = slot.reply || `What made you choose this problem to work on for ${project.name}?`;
+        const topic = slot.topicCovered || "project motivation";
+        playCharacterTurn(text, topic, slot.videoUrl, () => {
+          beginListeningRef.current();
+        });
+        return;
+      }
+
+      // --- STEP 3: Q3 (Pre-generated) ---
+      if (step === 3) {
+        const q = FIXED_QUESTIONS[3];
+        playCharacterTurn(q.text, q.topic, q.videoUrl, () => {
+          beginListeningRef.current();
+        });
+        return;
+      }
+
+      // --- STEP 4: Q4 (Tailored - generated in background during Q3) ---
+      if (step === 4) {
+        const slot = prefetchSlotsRef.current[4];
+        if (slot.status === "GENERATING" && slot.promise) {
+          const filler = FILLER_VIDEOS[1];
+          playCharacterTurn(filler.text, "acknowledgement", filler.videoUrl);
+          await slot.promise;
+        }
+        const text = slot.reply || `How does the core workflow in ${project.name} handle high load or latency?`;
+        const topic = slot.topicCovered || "architecture deep-dive";
+        playCharacterTurn(text, topic, slot.videoUrl, () => {
+          beginListeningRef.current();
+        });
+        return;
+      }
+
+      // --- STEP 5: Q5 (Pre-generated) ---
+      if (step === 5) {
+        const q = FIXED_QUESTIONS[5];
+        playCharacterTurn(q.text, q.topic, q.videoUrl, () => {
+          beginListeningRef.current();
+        });
+        return;
+      }
+
+      // --- STEP 6: Q6 (Tailored - generated in background during Q5) ---
+      if (step === 6) {
+        const slot = prefetchSlotsRef.current[6];
+        if (slot.status === "GENERATING" && slot.promise) {
+          const filler = FILLER_VIDEOS[2];
+          playCharacterTurn(filler.text, "acknowledgement", filler.videoUrl);
+          await slot.promise;
+        }
+        const text = slot.reply || `When edge cases or bad inputs occur in ${project.name}, how do you prevent failures?`;
+        const topic = slot.topicCovered || "edge case handling";
+        playCharacterTurn(text, topic, slot.videoUrl, () => {
+          beginListeningRef.current();
+        });
+        return;
+      }
+
+      // --- STEP 7: Q7 (Pre-generated) ---
+      if (step === 7) {
+        const q = FIXED_QUESTIONS[7];
+        playCharacterTurn(q.text, q.topic, q.videoUrl, () => {
+          beginListeningRef.current();
+        });
+        return;
+      }
+
+      // --- STEP 8: Q8 (Tailored - generated in background during Q7) ---
+      if (step === 8) {
+        const slot = prefetchSlotsRef.current[8];
+        if (slot.status === "GENERATING" && slot.promise) {
+          const filler = FILLER_VIDEOS[0];
+          playCharacterTurn(filler.text, "acknowledgement", filler.videoUrl);
+          await slot.promise;
+        }
+        const text = slot.reply || `What trade-off did you have to make during development that you'd rethink with more time?`;
+        const topic = slot.topicCovered || "engineering trade-offs";
+        playCharacterTurn(text, topic, slot.videoUrl, () => {
+          beginListeningRef.current();
+        });
+        return;
+      }
+
+      // --- STEP 9: Q9 (Pre-generated) ---
+      if (step === 9) {
+        const q = FIXED_QUESTIONS[9];
+        playCharacterTurn(q.text, q.topic, q.videoUrl, () => {
+          beginListeningRef.current();
+        });
+        return;
+      }
+
+      // --- STEP 10: Q10 (Tailored - generated in background during Q9) ---
+      if (step === 10) {
+        const slot = prefetchSlotsRef.current[10];
+        if (slot.status === "GENERATING" && slot.promise) {
+          const filler = FILLER_VIDEOS[1];
+          playCharacterTurn(filler.text, "acknowledgement", filler.videoUrl);
+          await slot.promise;
+        }
+        const text = slot.reply || `What's the single most important takeaway you want the judges to remember about ${project.name}?`;
+        const topic = slot.topicCovered || "key takeaway";
+        playCharacterTurn(text, topic, slot.videoUrl, () => {
+          beginListeningRef.current();
+        });
+        return;
+      }
+
+      // --- STEP 11: FAREWELL (Pre-generated) ---
+      if (step === 11) {
+        playCharacterTurn(FAREWELL_TURN.text, FAREWELL_TURN.topic, FAREWELL_TURN.videoUrl, () => {
+          onStageComplete();
+        });
+      }
+    },
+    [playCharacterTurn, triggerPrefetch, project, onStageComplete]
+  );
 
   const submitAnswer = useCallback(
     (text: string, startTime?: number, endTime?: number) => {
@@ -145,11 +491,36 @@ export default function ConversationController({
       setCaption("");
       setCaptionSpeaker(null);
 
-      answersThisStageRef.current += 1;
-      const isFinal = answersThisStageRef.current >= target;
-      void requestTurnRef.current(text, isFinal);
+      const currentStep = currentStepRef.current;
+
+      if (stage === "rahul") {
+        // Record user answer for context boundary tracking
+        // Step 0 = Intro Answer, Step 1 = Q1 Answer, Step 2 = Q2 Answer, etc.
+        if (currentStep >= 1 && currentStep <= 10) {
+          answersRef.current[currentStep] = text;
+        }
+
+        // TRIGGER BACKGROUND PREFETCH PIPELINES
+        if (currentStep === 2) {
+          // User just answered Q2 -> Trigger Q4 background generation (Context: Questionnaire + Q1 + Q2)
+          triggerPrefetch(4);
+        } else if (currentStep === 4) {
+          // User just answered Q4 -> Trigger Q6 background generation (Context: Questionnaire + Q1..Q4)
+          triggerPrefetch(6);
+        } else if (currentStep === 6) {
+          // User just answered Q6 -> Trigger Q8 background generation (Context: Questionnaire + Q1..Q6)
+          triggerPrefetch(8);
+        } else if (currentStep === 8) {
+          // User just answered Q8 -> Trigger Q10 background generation (Context: Questionnaire + Q1..Q8)
+          triggerPrefetch(10);
+        }
+
+        // Advance to next step
+        const nextStep = currentStep + 1;
+        void executeStep(nextStep);
+      }
     },
-    [clearIdleTimer, onTurn, stage, target]
+    [clearIdleTimer, onTurn, stage, triggerPrefetch, executeStep]
   );
 
   const beginListening = useCallback(() => {
@@ -157,7 +528,6 @@ export default function ConversationController({
     setUserInterimSpeech("");
 
     if (stage === "presentation") {
-      // The uninterrupted presentation round: timer visible, no prompting.
       setPresentationEndsAt(Date.now() + PRESENTATION_SECONDS * 1000);
       setStatus("presenting");
       showSystem(`Your presentation has started — about ${Math.round(PRESENTATION_SECONDS / 60)} minutes.`, 6000);
@@ -192,8 +562,6 @@ export default function ConversationController({
       },
     });
 
-    // Silence nudge. Deliberately a SYSTEM_MESSAGE, never spoken, and never a
-    // character repeating themselves — the spec calls that out specifically.
     clearIdleTimer();
     idleTimerRef.current = window.setTimeout(() => {
       showSystem("Take your time. You can respond when you're ready.", 6000);
@@ -202,242 +570,15 @@ export default function ConversationController({
 
   beginListeningRef.current = beginListening;
 
-  const requestTurn = useCallback(
-    async (userAnswer?: string, isFinalTurn?: boolean) => {
-      lastRequestRef.current = { userAnswer, isFinalTurn };
-      setStatus("requesting");
-      setErrorMessage(null);
-
-      const rahulTurnCount = stageHistory.filter((t) => t.speaker === "rahul").length;
-
-      // --- Instant Pre-Generated Turn 1 (Opening Introduction) ---
-      if (stage === "rahul" && rahulTurnCount === 0) {
-        const replyText = "Hey! I was just walking around checking out other tables. I'm Rahul, 3rd year CS from RV College. What's your name, and where are you guys from?";
-        onTurn({
-          id: newTurnId(),
-          speaker: "rahul",
-          text: replyText,
-          stage,
-          kind: "CHARACTER_DIALOGUE",
-          endTime: performance.now(),
-        });
-        onTopic("intro");
-        setStatus("speaking");
-        setCaption(replyText);
-        setCaptionSpeaker("rahul");
-
-        registerVideoEndCallback?.(() => {
-          registerVideoEndCallback?.(null);
-          registerVideoErrorCallback?.(null);
-          setCaption("");
-          setCaptionSpeaker(null);
-          onVisualStateChange?.("LISTENING");
-          beginListeningRef.current();
-        });
-
-        onRahulVideoGenerated?.("/generated/rahul-response-turn1-opening.mp4");
-        onVisualStateChange?.("SPEAKING");
-
-        // Background Warmup Ping: wake up Modal GPU container while Turn 1 intro is playing
-        void fetch("/api/generate-video", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ warmup: true }),
-        }).catch(() => null);
-
-        return;
-      }
-
-      // --- Instant Pre-Generated Final Turn (Farewell & Judging Countdown) ---
-      if (stage === "rahul" && isFinalTurn) {
-        const replyText = "That sounds seriously awesome! Best of luck with the demo — I heard the judges are starting their rounds in a few hours, so make sure you're ready. I gotta run back to my table to finish our deployment. Catch you later!";
-        onTurn({
-          id: newTurnId(),
-          speaker: "rahul",
-          text: replyText,
-          stage,
-          kind: "CHARACTER_DIALOGUE",
-          endTime: performance.now(),
-        });
-        onTopic("farewell");
-        setStatus("speaking");
-        setCaption(replyText);
-        setCaptionSpeaker("rahul");
-
-        registerVideoEndCallback?.(() => {
-          registerVideoEndCallback?.(null);
-          registerVideoErrorCallback?.(null);
-          setCaption("");
-          setCaptionSpeaker(null);
-          onVisualStateChange?.("LISTENING");
-          onStageComplete();
-        });
-
-        onRahulVideoGenerated?.("/generated/rahul-response-turn-farewell.mp4");
-        onVisualStateChange?.("SPEAKING");
-        return;
-      }
-
-      try {
-        const res = await fetch("/api/conversation", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            stage,
-            project,
-            stageHistory,
-            questionsAskedThisStage: stageHistory
-              .filter((t) => t.speaker !== "user")
-              .map((t) => t.text.slice(0, 60)),
-            userAnswer,
-            isFinalTurn,
-            priorPhaseSummary,
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.message || "The conversation service is unavailable.");
-
-        const turn = data as ValidatedTurn & { speaker?: Speaker };
-        // The model picks who speaks in the judge phases; Rahul's phase is
-        // always Rahul regardless of what comes back.
-        const speaker: Speaker =
-          stage === "rahul" ? "rahul" : turn.speaker === "judge2" ? "judge2" : "judge1";
-
-        onTurn({
-          id: newTurnId(),
-          speaker,
-          text: turn.reply,
-          stage,
-          kind: "CHARACTER_DIALOGUE",
-          endTime: performance.now(),
-        });
-        onTopic(turn.topicCovered);
-
-        const proceed = () => {
-          if (isFinalTurn) {
-            setCaption("");
-            setCaptionSpeaker(null);
-            onStageComplete();
-          } else {
-            beginListeningRef.current();
-          }
-        };
-
-        if ((data as { degraded?: boolean }).degraded) {
-          showSystem("Running in offline mode — questions are less tailored than usual.", 6000);
-        }
-
-        if (speaker === "rahul") {
-          const rahulTurnCount = stageHistory.filter((t) => t.speaker === "rahul").length;
-          let textHash = 0;
-          for (let i = 0; i < turn.reply.length; i++) {
-            textHash = ((textHash << 5) - textHash + turn.reply.charCodeAt(i)) | 0;
-          }
-          const hashStr = Math.abs(textHash).toString(36);
-          const turnId = isFinalTurn
-            ? "turn-farewell"
-            : rahulTurnCount === 0
-            ? "turn1-opening"
-            : `dynamic-${hashStr}`;
-
-          // Trigger immediate status, caption, and audio/video playback setup
-          setStatus("speaking");
-          setCaption(turn.reply);
-          setCaptionSpeaker(speaker);
-
-          const triggerFallback = () => {
-            console.warn("[ConversationController] Video playback failed or slow, using TTS over listening.mp4.");
-            registerVideoEndCallback?.(null);
-            registerVideoErrorCallback?.(null);
-            speak(turn.reply, {
-              character: "rahul",
-              onStart: () => interruptions?.characterSpeechStarted(),
-              onEnd: () => {
-                interruptions?.characterSpeechEnded();
-                setCaption("");
-                setCaptionSpeaker(null);
-                onVisualStateChange?.("LISTENING");
-                proceed();
-              },
-              onError: () => {
-                interruptions?.characterSpeechEnded();
-                setCaption("");
-                setCaptionSpeaker(null);
-                window.setTimeout(proceed, 1500);
-              },
-            });
-          };
-
-          registerVideoErrorCallback?.(triggerFallback);
-
-          registerVideoEndCallback?.(() => {
-            registerVideoEndCallback?.(null);
-            registerVideoErrorCallback?.(null);
-            setCaption("");
-            setCaptionSpeaker(null);
-            onVisualStateChange?.("LISTENING");
-            proceed();
-          });
-
-          // Fetch generated video (instant 15ms cache hit for Turn 1 or pre-generated turns)
-          try {
-            const vidRes = await fetch("/api/generate-video", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ responseId: turnId, text: turn.reply }),
-            });
-            const vidData = await vidRes.json();
-            if (vidRes.ok && vidData.videoUrl) {
-              onRahulVideoGenerated?.(vidData.videoUrl);
-              onVisualStateChange?.("SPEAKING");
-              return;
-            } else {
-              triggerFallback();
-            }
-          } catch (vidErr) {
-            console.warn("[ConversationController] Video generation error, falling back to TTS:", vidErr);
-            triggerFallback();
-          }
-          return;
-        }
-
-        setCaption(turn.reply);
-        setCaptionSpeaker(speaker);
-        setStatus("speaking");
-
-        speak(turn.reply, {
-          character: speaker as CharacterVoice,
-          onStart: () => interruptions?.characterSpeechStarted(),
-          onEnd: () => {
-            interruptions?.characterSpeechEnded();
-            proceed();
-          },
-          onError: () => {
-            interruptions?.characterSpeechEnded();
-            window.setTimeout(proceed, 1500);
-          },
-        });
-      } catch (err) {
-        setStatus("error");
-        setErrorMessage((err as Error).message);
-      }
-    },
-    [stage, project, stageHistory, priorPhaseSummary, onTurn, onTopic, onStageComplete, interruptions, showSystem, onVisualStateChange, onRahulVideoGenerated, registerVideoEndCallback, registerVideoErrorCallback]
-  );
-
-  const requestTurnRef = useRef(requestTurn);
-  requestTurnRef.current = requestTurn;
-
-  // Open the phase exactly once when it becomes active.
+  // Initialize Rahul's stage at step 0 (Intro)
   useEffect(() => {
     if (!active) return;
-    if (openedForStageRef.current === stage) return;
-    openedForStageRef.current = stage;
-    answersThisStageRef.current = 0;
-    void requestTurnRef.current(undefined, false);
-  }, [active, stage]);
+    if (stage === "rahul") {
+      void executeStep(0);
+    }
+  }, [active, stage, executeStep]);
 
-  // Teardown when this phase stops being active.
+  // Teardown when inactive
   useEffect(() => {
     if (active) return;
     stopSpeaking();
@@ -488,7 +629,6 @@ export default function ConversationController({
         />
       )}
 
-      {/* SYSTEM_MESSAGE surface. Never routed to TTS. */}
       {systemNotice && (
         <div
           role="status"
@@ -566,26 +706,12 @@ export default function ConversationController({
         </form>
       )}
 
-      {status === "presenting" && !showTypedInput && (
-        <button
-          onClick={() => {
-            recognitionRef.current?.stop();
-            setStatus("typing");
-          }}
-          className="fixed bottom-20 left-1/2 z-[500] -translate-x-1/2 rounded-full border border-white/20 bg-black/60 px-5 py-2 text-xs uppercase tracking-widest text-neutral-200 backdrop-blur-sm hover:bg-white/10"
-        >
-          I&apos;ve finished presenting
-        </button>
-      )}
-
       {status === "error" && (
         <div className="fixed bottom-20 left-1/2 z-[500] flex w-[min(460px,90vw)] -translate-x-1/2 flex-col items-center gap-2 rounded-lg bg-black/75 px-5 py-4 text-center backdrop-blur-sm">
           <p className="text-sm text-neutral-200">{errorMessage}</p>
           <div className="flex gap-4">
             <button
-              onClick={() =>
-                void requestTurn(lastRequestRef.current.userAnswer, lastRequestRef.current.isFinalTurn)
-              }
+              onClick={() => void executeStep(currentStepRef.current)}
               className="font-mono text-xs uppercase tracking-widest text-sky-400 hover:text-sky-300"
             >
               Retry
