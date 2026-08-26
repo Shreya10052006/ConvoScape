@@ -20,22 +20,37 @@ if os.path.exists(torch_lib):
 site.addsitedir(r'C:\Users\Shreya\AppData\Roaming\Python\Python313\site-packages')
 site.addsitedir(site.getusersitepackages())
 
-# Import ONNX Runtime with CPU / OpenVINO optimizations
+# Import ONNX Runtime with DirectML (Local GPU) and CPU fallback
 USE_ONNX = False
 ORT_SESSION = None
+PROVIDER_NAME = "PyTorch"
+
 try:
     import onnxruntime as ort  # type: ignore
-    ONNX_PATH = os.path.abspath('backend/models/wav2lip_gan.onnx')
-    if os.path.exists(ONNX_PATH):
+    available_providers = ort.get_available_providers()
+    
+    chosen_providers = []
+    if 'DmlExecutionProvider' in available_providers:
+        chosen_providers.append('DmlExecutionProvider')
+    chosen_providers.append('CPUExecutionProvider')
+    
+    onnx_fp32 = os.path.abspath('backend/models/wav2lip_gan.onnx')
+    onnx_int8 = os.path.abspath('backend/models/wav2lip_gan_int8.onnx')
+    
+    model_path = onnx_fp32 if 'DmlExecutionProvider' in chosen_providers else (onnx_int8 if os.path.exists(onnx_int8) else onnx_fp32)
+    
+    if os.path.exists(model_path):
         sess_opts = ort.SessionOptions()
         sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         sess_opts.intra_op_num_threads = os.cpu_count() or 8
         sess_opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        ORT_SESSION = ort.InferenceSession(ONNX_PATH, sess_opts, providers=['CPUExecutionProvider'])
+        ORT_SESSION = ort.InferenceSession(model_path, sess_opts, providers=chosen_providers)
         USE_ONNX = True
-        print(f"[Wav2Lip Daemon] Loaded optimized ONNX Runtime engine from {ONNX_PATH}!")
+        active_provider = ORT_SESSION.get_providers()[0]
+        PROVIDER_NAME = f"ONNX ({active_provider})"
+        print(f"[Wav2Lip Daemon] Successfully loaded {PROVIDER_NAME} from {os.path.basename(model_path)}!")
 except Exception as e:
-    print(f"[Wav2Lip Daemon] ONNX load notice (fallback to PyTorch): {e}")
+    print(f"[Wav2Lip Daemon] ONNX initialization notice: {e}")
 
 try:
     import torch  # type: ignore
@@ -58,7 +73,6 @@ except Exception:
     except Exception:
         pass
 
-# Load PyTorch model as reliable fallback if ONNX is not used
 MODEL = None
 if not USE_ONNX:
     print("[Wav2Lip Daemon] Loading PyTorch Wav2Lip GAN model...")
@@ -84,7 +98,7 @@ while True:
     FULL_FRAMES.append(frame)
 CAP.release()
 
-# Pre-compute face coordinates and blending masks ONCE
+# Pre-compute face coordinates and feathering blend masks ONCE
 Y1, Y2, X1, X2 = 54, 159, 719, 799
 FW, FH = X2 - X1, Y2 - Y1
 
@@ -96,10 +110,7 @@ INVERSE_MASK = (1.0 - MASK_SINGLE).astype(np.float32)
 
 PRE_FACE_CROPS = [cv2.resize(f[Y1:Y2, X1:X2], (96, 96)) for f in FULL_FRAMES]
 
-# Pre-allocated zero-copy reusable frame buffer
-OUT_FRAME_BUFFER = np.zeros((FRAME_H, FRAME_W, 3), dtype=np.uint8)
-
-print(f"[Wav2Lip Daemon] READY! Engine: {'ONNX-Fast' if USE_ONNX else 'PyTorch'} & {len(FULL_FRAMES)} video frames. Standing by on port 5001...")
+print(f"[Wav2Lip Daemon] READY! Engine: {PROVIDER_NAME} & {len(FULL_FRAMES)} video frames. Standing by on port 5001...")
 
 FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
 
@@ -117,6 +128,11 @@ def generate_tts_audio(text, audio_path):
             stderr=subprocess.DEVNULL,
             check=True,
         )
+        if os.path.exists(temp_mp3):
+            try:
+                os.remove(temp_mp3)
+            except Exception:
+                pass
     except Exception as e:
         print(f"[Daemon TTS] edge-tts fallback: {e}")
         import pythoncom
@@ -148,7 +164,7 @@ def process_video_generation(response_id, text):
     wav = audio.load_wav(audio_path, 16000)
     mel = audio.melspectrogram(wav)
 
-    # 3. Align Mel Chunks
+    # 3. Align Mel Chunks for all video frames
     mel_step_size = 16
     mel_chunks = []
     mel_idx_multiplier = 80.0 / FPS
@@ -162,34 +178,28 @@ def process_video_generation(response_id, text):
         i += 1
 
     num_frames = len(mel_chunks)
-    batch_size = 64
-
-    # 4. Direct Fast Multi-Threaded FFmpeg Streaming Pipe
-    pipe_cmd = [
-        FFMPEG_EXE, '-y',
-        '-threads', '8',
-        '-f', 'rawvideo', '-vcodec', 'rawvideo',
-        '-s', f'{FRAME_W}x{FRAME_H}', '-pix_fmt', 'bgr24', '-r', str(FPS),
-        '-i', '-',
-        '-i', audio_path,
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
-        '-threads', '8',
-        '-pix_fmt', 'yuv420p',
-        '-c:a', 'aac', '-b:a', '128k',
-        '-shortest',
-        '-movflags', '+faststart',
-        out_video
-    ]
-    proc = subprocess.Popen(pipe_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    # 4. Ultra-Fast 8.33 FPS Subsampling (Step = 3 for 67% compute reduction)
+    step = 3
+    sample_indices = list(range(0, num_frames, step))
+    if sample_indices[-1] != num_frames - 1:
+        sample_indices.append(num_frames - 1)
+        
+    sampled_mel = [mel_chunks[idx] for idx in sample_indices]
+    sampled_face = [PRE_FACE_CROPS[idx % len(FULL_FRAMES)] for idx in sample_indices]
+    num_sampled = len(sample_indices)
+    
+    batch_size = 256
+    sampled_preds = []
 
     infer_start = time.perf_counter()
 
-    # 5. Batch Inference with ONNX Runtime or PyTorch
-    for b_start in range(0, num_frames, batch_size):
-        b_end = min(b_start + batch_size, num_frames)
-        b_chunks = mel_chunks[b_start:b_end]
+    # 5. Batch Inference on Keyframes
+    for b_start in range(0, num_sampled, batch_size):
+        b_end = min(b_start + batch_size, num_sampled)
+        b_chunks = sampled_mel[b_start:b_end]
 
-        img_batch = np.array([PRE_FACE_CROPS[idx % len(FULL_FRAMES)] for idx in range(b_start, b_end)])
+        img_batch = np.array(sampled_face[b_start:b_end])
         img_masked = img_batch.copy()
         img_masked[:, 48:] = 0
 
@@ -210,28 +220,59 @@ def process_video_generation(response_id, text):
                 pred = MODEL(t_mel, t_img)
             pred_np = pred.numpy().transpose(0, 2, 3, 1) * 255.0
 
-        # In-place blending into zero-copy frame buffer
-        for j, p in enumerate(pred_np):
-            frame_idx = (b_start + j) % len(FULL_FRAMES)
-            src_frame = FULL_FRAMES[frame_idx]
-            
-            # Copy base frame into reusable buffer
-            np.copyto(OUT_FRAME_BUFFER, src_frame)
-            
+        for p in pred_np:
             p_uint8 = np.clip(p, 0, 255).astype(np.uint8)
-            p_resized = cv2.resize(p_uint8, (FW, FH)).astype(np.float32)
+            sampled_preds.append(cv2.resize(p_uint8, (FW, FH), interpolation=cv2.INTER_LINEAR).astype(np.float32))
+
+    infer_time = time.perf_counter() - infer_start
+
+    # 6. Smooth Hermite Curve Interpolation to 25 FPS
+    preds_25fps = []
+    for full_idx in range(num_frames):
+        k = full_idx // step
+        if k >= len(sampled_preds) - 1:
+            preds_25fps.append(sampled_preds[-1])
+        else:
+            t = (full_idx % step) / float(step)
+            t_smooth = t * t * (3.0 - 2.0 * t)  # Hermite smoothstep curve
+            p_interp = (1.0 - t_smooth) * sampled_preds[k] + t_smooth * sampled_preds[k + 1]
+            preds_25fps.append(p_interp)
+
+    # 7. High-Throughput Chunked FFmpeg Pipe Write
+    pipe_cmd = [
+        FFMPEG_EXE, '-y',
+        '-threads', '8',
+        '-f', 'rawvideo', '-vcodec', 'rawvideo',
+        '-s', f'{FRAME_W}x{FRAME_H}', '-pix_fmt', 'bgr24', '-r', str(FPS),
+        '-i', '-',
+        '-i', audio_path,
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+        '-threads', '8',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '128k',
+        '-shortest',
+        '-movflags', '+faststart',
+        out_video
+    ]
+    proc = subprocess.Popen(pipe_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    chunk_size = 32
+    for c_start in range(0, num_frames, chunk_size):
+        c_end = min(c_start + chunk_size, num_frames)
+        chunk_buf = np.zeros((c_end - c_start, FRAME_H, FRAME_W, 3), dtype=np.uint8)
+        for i, full_idx in enumerate(range(c_start, c_end)):
+            src_frame = FULL_FRAMES[full_idx % len(FULL_FRAMES)]
+            np.copyto(chunk_buf[i], src_frame)
             orig_face = src_frame[Y1:Y2, X1:X2].astype(np.float32)
-            
-            # Blend face directly into buffer
-            OUT_FRAME_BUFFER[Y1:Y2, X1:X2] = (p_resized * MASK_SINGLE + orig_face * INVERSE_MASK).astype(np.uint8)
-            proc.stdin.write(OUT_FRAME_BUFFER.tobytes())
+            p_face = preds_25fps[full_idx]
+            chunk_buf[i, Y1:Y2, X1:X2] = (p_face * MASK_SINGLE + orig_face * INVERSE_MASK).astype(np.uint8)
+        proc.stdin.write(chunk_buf.tobytes())
 
     proc.stdin.close()
     proc.wait()
 
-    infer_time = time.perf_counter() - infer_start
     total_time = time.perf_counter() - start_time
-    print(f"[Wav2Lip Server] Generated {num_frames} frames ({num_frames/FPS:.1f}s audio) in {total_time:.2f}s (TTS: {tts_time:.2f}s, Inference: {infer_time:.2f}s, Engine: {'ONNX' if USE_ONNX else 'PyTorch'})")
+    print(f"[Wav2Lip Server] Generated {num_frames} frames ({num_frames/FPS:.1f}s speech) in {total_time:.2f}s (TTS: {tts_time:.2f}s, Infer: {infer_time:.2f}s, Engine: {PROVIDER_NAME})")
     return out_video
 
 class RequestHandler(BaseHTTPRequestHandler):

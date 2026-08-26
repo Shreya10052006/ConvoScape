@@ -18,19 +18,31 @@ if os.path.exists(torch_lib):
 site.addsitedir(r'C:\Users\Shreya\AppData\Roaming\Python\Python313\site-packages')
 site.addsitedir(site.getusersitepackages())
 
-# Import ONNX Runtime with CPU optimizations
+# Import ONNX Runtime with DirectML and CPU fallback
 USE_ONNX = False
 ORT_SESSION = None
+PROVIDER_NAME = "PyTorch"
+
 try:
     import onnxruntime as ort  # type: ignore
-    ONNX_PATH = os.path.abspath('backend/models/wav2lip_gan.onnx')
-    if os.path.exists(ONNX_PATH):
+    available_providers = ort.get_available_providers()
+    chosen_providers = []
+    if 'DmlExecutionProvider' in available_providers:
+        chosen_providers.append('DmlExecutionProvider')
+    chosen_providers.append('CPUExecutionProvider')
+    
+    onnx_fp32 = os.path.abspath('backend/models/wav2lip_gan.onnx')
+    onnx_int8 = os.path.abspath('backend/models/wav2lip_gan_int8.onnx')
+    model_path = onnx_fp32 if 'DmlExecutionProvider' in chosen_providers else (onnx_int8 if os.path.exists(onnx_int8) else onnx_fp32)
+    
+    if os.path.exists(model_path):
         sess_opts = ort.SessionOptions()
         sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         sess_opts.intra_op_num_threads = os.cpu_count() or 8
         sess_opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        ORT_SESSION = ort.InferenceSession(ONNX_PATH, sess_opts, providers=['CPUExecutionProvider'])
+        ORT_SESSION = ort.InferenceSession(model_path, sess_opts, providers=chosen_providers)
         USE_ONNX = True
+        PROVIDER_NAME = f"ONNX ({ORT_SESSION.get_providers()[0]})"
 except Exception:
     pass
 
@@ -41,7 +53,6 @@ try:
 except Exception:
     pass
 
-# Import official Wav2Lip modules
 wav2lip_dir = os.path.abspath('backend/Wav2Lip')
 if wav2lip_dir not in sys.path:
     sys.path.insert(0, wav2lip_dir)
@@ -81,6 +92,11 @@ def generate_tts_audio(text, audio_path):
             stderr=subprocess.DEVNULL,
             check=True,
         )
+        if os.path.exists(temp_mp3):
+            try:
+                os.remove(temp_mp3)
+            except Exception:
+                pass
     except Exception as e:
         print(f"[Generate TTS] edge-tts fallback: {e}")
         import pythoncom
@@ -136,7 +152,6 @@ def generate_rahul_video(response_id: str, text: str) -> str:
     inv_mask = (1.0 - mask_single).astype(np.float32)
 
     pre_face_crops = [cv2.resize(f[y1:y2, x1:x2], (96, 96)) for f in full_frames]
-    out_buffer = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
 
     # 4. Mel Chunks
     mel_step_size = 16
@@ -152,32 +167,26 @@ def generate_rahul_video(response_id: str, text: str) -> str:
         i += 1
 
     num_frames = len(mel_chunks)
-    batch_size = 64
+    
+    # 8.33 FPS Subsampling (Step = 3 for 67% inference reduction)
+    step = 3
+    sample_indices = list(range(0, num_frames, step))
+    if sample_indices[-1] != num_frames - 1:
+        sample_indices.append(num_frames - 1)
+        
+    sampled_mel = [mel_chunks[idx] for idx in sample_indices]
+    sampled_face = [pre_face_crops[idx % len(full_frames)] for idx in sample_indices]
+    num_sampled = len(sample_indices)
+    
+    batch_size = 256
+    sampled_preds = []
 
-    # 5. FFmpeg multi-threaded pipe
-    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-    pipe_cmd = [
-        ffmpeg_exe, '-y',
-        '-threads', '8',
-        '-f', 'rawvideo', '-vcodec', 'rawvideo',
-        '-s', f'{frame_w}x{frame_h}', '-pix_fmt', 'bgr24', '-r', str(fps),
-        '-i', '-',
-        '-i', audio_path,
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
-        '-threads', '8',
-        '-pix_fmt', 'yuv420p',
-        '-c:a', 'aac', '-b:a', '128k',
-        '-shortest',
-        '-movflags', '+faststart',
-        out_video
-    ]
-    proc = subprocess.Popen(pipe_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # 5. Inference
+    for b_start in range(0, num_sampled, batch_size):
+        b_end = min(b_start + batch_size, num_sampled)
+        b_chunks = sampled_mel[b_start:b_end]
 
-    for b_start in range(0, num_frames, batch_size):
-        b_end = min(b_start + batch_size, num_frames)
-        b_chunks = mel_chunks[b_start:b_end]
-
-        img_batch = np.array([pre_face_crops[idx % len(full_frames)] for idx in range(b_start, b_end)])
+        img_batch = np.array(sampled_face[b_start:b_end])
         img_masked = img_batch.copy()
         img_masked[:, 48:] = 0
 
@@ -198,23 +207,58 @@ def generate_rahul_video(response_id: str, text: str) -> str:
                 pred = MODEL(t_mel, t_img)
             pred_np = pred.numpy().transpose(0, 2, 3, 1) * 255.0
 
-        for j, p in enumerate(pred_np):
-            frame_idx = (b_start + j) % len(full_frames)
-            src_frame = full_frames[frame_idx]
-            np.copyto(out_buffer, src_frame)
-            
+        for p in pred_np:
             p_uint8 = np.clip(p, 0, 255).astype(np.uint8)
-            p_resized = cv2.resize(p_uint8, (fw, fh)).astype(np.float32)
+            sampled_preds.append(cv2.resize(p_uint8, (fw, fh), interpolation=cv2.INTER_LINEAR).astype(np.float32))
+
+    # 6. Smooth Hermite Curve Interpolation
+    preds_25fps = []
+    for full_idx in range(num_frames):
+        k = full_idx // step
+        if k >= len(sampled_preds) - 1:
+            preds_25fps.append(sampled_preds[-1])
+        else:
+            t = (full_idx % step) / float(step)
+            t_smooth = t * t * (3.0 - 2.0 * t)
+            p_interp = (1.0 - t_smooth) * sampled_preds[k] + t_smooth * sampled_preds[k + 1]
+            preds_25fps.append(p_interp)
+
+    # 7. Chunked FFmpeg Streaming Pipe
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    pipe_cmd = [
+        ffmpeg_exe, '-y',
+        '-threads', '8',
+        '-f', 'rawvideo', '-vcodec', 'rawvideo',
+        '-s', f'{frame_w}x{frame_h}', '-pix_fmt', 'bgr24', '-r', str(fps),
+        '-i', '-',
+        '-i', audio_path,
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+        '-threads', '8',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '128k',
+        '-shortest',
+        '-movflags', '+faststart',
+        out_video
+    ]
+    proc = subprocess.Popen(pipe_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    chunk_size = 32
+    for c_start in range(0, num_frames, chunk_size):
+        c_end = min(c_start + chunk_size, num_frames)
+        chunk_buf = np.zeros((c_end - c_start, frame_h, frame_w, 3), dtype=np.uint8)
+        for i, full_idx in enumerate(range(c_start, c_end)):
+            src_frame = full_frames[full_idx % len(full_frames)]
+            np.copyto(chunk_buf[i], src_frame)
             orig_face = src_frame[y1:y2, x1:x2].astype(np.float32)
-            
-            out_buffer[y1:y2, x1:x2] = (p_resized * mask_single + orig_face * inv_mask).astype(np.uint8)
-            proc.stdin.write(out_buffer.tobytes())
+            p_face = preds_25fps[full_idx]
+            chunk_buf[i, y1:y2, x1:x2] = (p_face * mask_single + orig_face * inv_mask).astype(np.uint8)
+        proc.stdin.write(chunk_buf.tobytes())
 
     proc.stdin.close()
     proc.wait()
 
     elapsed = time.perf_counter() - t0
-    print(f"[Generate] Completed in {elapsed:.2f}s (Engine: {'ONNX' if USE_ONNX else 'PyTorch'}) -> {out_video}")
+    print(f"[Generate] Completed in {elapsed:.2f}s (Engine: {PROVIDER_NAME}) -> {out_video}")
     return out_video
 
 if __name__ == '__main__':

@@ -41,27 +41,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ videoUrl, cached: true });
   }
 
-  // 2. Generate Video via Modal Cloud GPU (Fastest ~1.2s) or Local Daemon / Subprocess Fallback
+  // 2. Generate Video via Local In-Memory Daemon / Subprocess Fallback
   try {
-    const modalUrl = process.env.MODAL_WAV2LIP_URL;
-    if (modalUrl) {
-      const modalRes = await fetch(modalUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ responseId: cleanId, text }),
-      }).catch((err) => {
-        console.warn("[generate-video API] Modal GPU request failed, falling back to local:", err);
-        return null;
-      });
-
-      if (modalRes && modalRes.ok) {
-        const arrayBuffer = await modalRes.arrayBuffer();
-        fs.mkdirSync(path.dirname(publicVideoPath), { recursive: true });
-        fs.writeFileSync(publicVideoPath, Buffer.from(arrayBuffer));
-        return NextResponse.json({ videoUrl, cached: false, provider: "modal-gpu" });
-      }
-    }
-
     // Try fast in-memory daemon on port 5001 first
     const daemonRes = await fetch("http://127.0.0.1:5001", {
       method: "POST",
@@ -71,7 +52,7 @@ export async function POST(req: NextRequest) {
 
     if (daemonRes && daemonRes.ok) {
       if (fs.existsSync(publicVideoPath)) {
-        return NextResponse.json({ videoUrl, cached: false });
+        return NextResponse.json({ videoUrl, cached: false, provider: "local-daemon" });
       }
     }
 

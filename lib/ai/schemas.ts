@@ -52,7 +52,13 @@ export const turnResponseSchema = z.object({
   evaluation: turnEvaluationSchema.nullish().catch(null),
 });
 
+export const tailoredTurnResponseSchema = z.object({
+  reply: z.string().min(1, "model returned an empty reply"),
+  topicCovered: z.string().default("project question"),
+});
+
 export type ValidatedTurn = z.infer<typeof turnResponseSchema>;
+export type ValidatedTailoredTurn = z.infer<typeof tailoredTurnResponseSchema>;
 
 export const coachingReportSchema = z.object({
   overall: z
