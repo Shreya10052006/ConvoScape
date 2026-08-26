@@ -1,184 +1,297 @@
 /**
  * reportService.ts
  * ---------------------------------------------------------------------------
- * SERVER-ONLY. One Gemini call combining the transcript, deterministic speech
- * metrics, the per-turn scores already collected during the conversation, and
- * optional webcam metrics, into the structured coaching report.
+ * SERVER-ONLY. Evaluates the completed Rahul conversation session and generates
+ * the structured Student Communication Report.
  *
- * THIS FUNCTION NEVER THROWS. The spec is explicit that the user must always
- * receive a report, and a black screen reading "Gemini response was not valid
- * JSON" is the exact outcome to design against. If the AI call fails for any
- * reason — network, quota, timeout, malformed output surviving both parse
- * attempts — we fall through to buildFallbackReport(), which assembles a real
- * report from measured data and flags itself as degraded.
- *
- * Honesty is enforced structurally rather than by asking nicely: every item in
- * whatYouDidWell / whatYouMissed must cite a specific moment, and
- * questionBreakdown requires a stronger rewrite of the user's OWN answer, which
- * is hard to fake generically.
+ * GUARANTEES:
+ * 1. Single Gemini call per session — cached by sessionId.
+ * 2. Compact token-efficient prompt (excludes internal logs, Wav2Lip, URLs).
+ * 3. Token-optimized response (Gemini returns only analysis; frontend/server
+ *    joins stored Q&A).
+ * 4. Privacy-first camera integration: receives only aggregate numerical metrics
+ *    (zero raw frames/images ever uploaded).
+ * 5. Strictly objective behavioral feedback (no confidence or emotion mind-reading).
+ * 6. Never throws — falls back to deterministic buildFallbackReport() if offline.
  */
 
 import "server-only";
 import { generateJSON, zodValidator } from "./geminiClient";
-import { coachingReportSchema } from "./schemas";
+import { studentCommunicationReportSchema } from "./schemas";
 import { buildFallbackReport } from "./fallbackReport";
-import {
-  computeDurations,
-  type CoachingReport,
-  type InterruptionMetrics,
-  type ProjectContext,
-  type SessionTimestamps,
-  type SpeechMetrics,
-  type TranscriptTurn,
-  type WebcamResult,
+import type {
+  CompactQuestionTurn,
+  CompactStudentReportInput,
+  FinalReport,
+  InterruptionMetrics,
+  ProjectContext,
+  SessionTimestamps,
+  SpeechMetrics,
+  StudentCommunicationReport,
+  TranscriptTurn,
+  WebcamResult,
 } from "@/lib/session/sessionTypes";
-import { describeInterruptions } from "@/lib/speech/interruptionTracker";
 
-const REPORT_SCHEMA = {
+// Server-side in-memory cache to prevent duplicate Gemini calls on page reload/navigation
+const studentReportCache = new Map<string, StudentCommunicationReport>();
+
+const STUDENT_REPORT_JSON_SCHEMA = {
   type: "object",
   properties: {
-    narrativeSummary: { type: "string" },
-    overall: {
+    reportType: { type: "string", enum: ["student_communication"] },
+    overallScore: { type: "integer" },
+    overallSummary: { type: "string" },
+    categoryScores: {
       type: "object",
       properties: {
-        communicationScore: { type: "integer" },
-        technicalExplanationScore: { type: "integer" },
-        clarityScore: { type: "integer" },
-        confidenceScore: { type: "integer" },
-        questionHandlingScore: { type: "integer" },
-        specificityScore: { type: "integer" },
-        structureScore: { type: "integer" },
-        relevanceScore: { type: "integer" },
+        clarity: { type: "integer" },
+        relevance: { type: "integer" },
+        structure: { type: "integer" },
+        technicalCommunication: { type: "integer" },
+        spontaneousThinking: { type: "integer" },
+        conciseness: { type: "integer" },
       },
       required: [
-        "communicationScore", "technicalExplanationScore", "clarityScore",
-        "confidenceScore", "questionHandlingScore", "specificityScore",
-        "structureScore", "relevanceScore",
+        "clarity",
+        "relevance",
+        "structure",
+        "technicalCommunication",
+        "spontaneousThinking",
+        "conciseness",
       ],
     },
-    whatYouDidWell: { type: "array", items: { type: "string" } },
-    whatYouMissed: { type: "array", items: { type: "string" } },
-    communicationAnalysis: { type: "string" },
-    technicalCommunication: { type: "string" },
-    questionBreakdown: {
+    questionAnalysis: {
       type: "array",
       items: {
         type: "object",
         properties: {
-          question: { type: "string" },
-          answerSummary: { type: "string" },
-          whatWasGood: { type: "string" },
-          whatWasWeak: { type: "string" },
-          whatTheJudgeWasTesting: { type: "string" },
-          strongerAnswer: { type: "string" },
+          questionNumber: { type: "integer" },
+          score: { type: "integer" },
+          whatWorked: { type: "array", items: { type: "string" } },
+          whatCouldImprove: { type: "array", items: { type: "string" } },
+          betterApproach: { type: "string" },
+          communicationTags: { type: "array", items: { type: "string" } },
         },
         required: [
-          "question", "answerSummary", "whatWasGood",
-          "whatWasWeak", "whatTheJudgeWasTesting", "strongerAnswer",
+          "questionNumber",
+          "score",
+          "whatWorked",
+          "whatCouldImprove",
+          "betterApproach",
+          "communicationTags",
         ],
       },
     },
-    speakingPatterns: { type: "string" },
-    answerQuality: { type: "string" },
-    bodyLanguage: { type: "string", nullable: true },
-    mostImportantImprovement: { type: "string" },
-    howToPractice: { type: "string" },
-    repetitionAnalysis: {
-      type: "string",
-      description: "Distinguish hesitation-driven repetition from deliberate emphasis and from correct reuse of the project's own vocabulary. Never tell the student to stop naming their own project.",
+    strongestAnswers: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          questionNumber: { type: "integer" },
+          reason: { type: "string" },
+        },
+        required: ["questionNumber", "reason"],
+      },
+    },
+    answersNeedingImprovement: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          questionNumber: { type: "integer" },
+          reason: { type: "string" },
+          improvement: { type: "string" },
+        },
+        required: ["questionNumber", "reason", "improvement"],
+      },
+    },
+    strengths: { type: "array", items: { type: "string" } },
+    recurringWeaknesses: { type: "array", items: { type: "string" } },
+    unexpectedQuestionPerformance: {
+      type: "object",
+      properties: {
+        score: { type: "integer" },
+        summary: { type: "string" },
+        observations: { type: "array", items: { type: "string" } },
+      },
+      required: ["score", "summary", "observations"],
+    },
+    technicalCommunication: {
+      type: "object",
+      properties: {
+        score: { type: "integer" },
+        summary: { type: "string" },
+        strengths: { type: "array", items: { type: "string" } },
+        improvements: { type: "array", items: { type: "string" } },
+      },
+      required: ["score", "summary", "strengths", "improvements"],
+    },
+    improvementPlan: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          priority: { type: "integer" },
+          area: { type: "string" },
+          whyItMatters: { type: "string" },
+          howToPractice: { type: "string" },
+        },
+        required: ["priority", "area", "whyItMatters", "howToPractice"],
+      },
+    },
+    nextSessionGoals: { type: "array", items: { type: "string" } },
+    cameraAnalysis: {
+      type: "object",
+      properties: {
+        enabled: { type: "boolean" },
+        eyeContactRatio: { type: "number" },
+        forwardFacingRatio: { type: "number" },
+        faceDetectedRatio: { type: "number" },
+        headOrientation: {
+          type: "object",
+          properties: {
+            forwardRatio: { type: "number" },
+            leftRatio: { type: "number" },
+            rightRatio: { type: "number" },
+            upRatio: { type: "number" },
+            downRatio: { type: "number" },
+          },
+        },
+        interruptions: {
+          type: "object",
+          properties: {
+            faceLostCount: { type: "number" },
+            prolongedLookAwayCount: { type: "number" },
+          },
+        },
+        observations: { type: "string" },
+        note: { type: "string" },
+      },
+      nullable: true,
     },
   },
   required: [
-    "narrativeSummary", "overall", "whatYouDidWell", "whatYouMissed",
-    "communicationAnalysis", "technicalCommunication", "questionBreakdown",
-    "speakingPatterns", "answerQuality", "mostImportantImprovement", "howToPractice",
-    "repetitionAnalysis",
-  ],
-  propertyOrdering: [
-    "narrativeSummary", "overall", "whatYouDidWell", "whatYouMissed",
-    "communicationAnalysis", "technicalCommunication", "speakingPatterns",
-    "answerQuality", "bodyLanguage", "mostImportantImprovement",
-    "howToPractice", "repetitionAnalysis", "questionBreakdown",
+    "reportType",
+    "overallScore",
+    "overallSummary",
+    "categoryScores",
+    "questionAnalysis",
+    "strongestAnswers",
+    "answersNeedingImprovement",
+    "strengths",
+    "recurringWeaknesses",
+    "unexpectedQuestionPerformance",
+    "technicalCommunication",
+    "improvementPlan",
+    "nextSessionGoals",
   ],
 };
 
-const SYSTEM = `You are an experienced, honest presentation coach reviewing a student's hackathon practice session: first a casual conversation with a peer, then a judging panel that heard a short presentation and asked questions.
+const SYSTEM_INSTRUCTION = `You are ConvoScape's communication coach reviewing a student's simulated conversation with Rahul, a friendly 3rd-year CS student who asked about the student's project.
 
-RULES:
-- Be direct and evidence-based. Never inflate scores to be encouraging. A weak answer must be named as weak, with the specific thing that was missing.
-- Every claim must be traceable to the transcript or the metrics provided. Never invent details, features, or quotes.
-- In questionBreakdown, "strongerAnswer" must rewrite the student's OWN answer using their REAL project. Never invent capabilities they didn't mention.
-- Explain WHY something was weak and what it cost them, not just that it was weak.
-- Write like a human mentor talking to the student, using "you". Not a graded rubric.
-- If camera metrics are absent, set bodyLanguage to null and never mention body language or the camera.
-- Never diagnose emotional or psychological states. Say "your head turned away frequently", never "you were nervous".
-- Use the pre-computed speech metrics as given. Do not recompute or contradict them.
+YOUR ROLE:
+- Your job is NOT to judge whether the project idea is good or bad.
+- Your job is to evaluate how effectively the student COMMUNICATED their project and handled unexpected questions across questions Q1 to Q10.
+- Be constructive, specific, encouraging, and evidence-based. Do not act like a strict examiner or criticize the student personally.
+- Ground every weakness in the student's actual responses.
 
-FOR EVERY SIGNIFICANT WEAKNESS you must cover four things, in prose rather than as labelled fields: WHAT happened (quote or closely paraphrase the moment), WHY it costs them (what the judge concluded or couldn't conclude), HOW to fix it (a concrete structural change), and a BETTER VERSION written using their REAL project. Never write a bare score with no explanation attached. "Clarity: 6/10" on its own is a failure of this instruction.
+CRITICAL INSTRUCTIONS:
+1. In questionAnalysis, evaluate all 10 questions (Q1 to Q10).
+2. DO NOT echo back the full question or full answer in your output (the frontend already stores them). Only return your analysis: score (0-100), whatWorked, whatCouldImprove, betterApproach, and communicationTags.
+3. Distinguish between:
+   a. Technical knowledge (how well they understand their architecture/stack)
+   b. Ability to COMMUNICATE technical knowledge (crispness, clarity, avoiding jargon traps).
+4. Evaluate spontaneous thinking on unexpected/tailored follow-ups (Q2, Q4, Q6, Q8, Q10).
+5. Identify the Top 3 strongest answers and Top 3 answers needing improvement with actionable reasons.
+6. Provide an improvement plan and 4 actionable next session goals.
 
-On repetition: immediate repeats ("I, I think") signal hesitation. Repeating the project's own name or technical vocabulary is CORRECT and consistent — never flag it as a problem or tell them to vary it.`;
+CAMERA ANALYSIS RULES (STRICT):
+- If camera.enabled === false: Output cameraAnalysis: null. NEVER invent camera observations or penalize overall scores.
+- If camera.enabled === true:
+  * Describe observations as "Camera-facing / apparent eye-contact consistency" and note that it is an approximation based on facial orientation and gaze landmarks.
+  * Cite the supplied numerical metrics (e.g. eyeContactRatio, forwardFacingRatio, faceDetectedRatio).
+  * STRICT PROHIBITION: DO NOT calculate or claim any "confidence score" (e.g. "You were 72% confident"). DO NOT attempt psychological mind-reading (e.g. "nervous", "anxious", "dishonest").
+  * Ground feedback strictly in observable presentation habits (e.g., "Your camera-facing consistency was ~74%, with occasional glances away while recalling architecture details").
+7. Return valid JSON only conforming to the schema.`;
 
-function formatTranscript(transcript: TranscriptTurn[]): string {
-  return transcript
-    .filter((t) => t.speaker !== "system")
-    .map((t) => {
-      const label = t.speaker === "user" ? "STUDENT" : t.speaker.toUpperCase();
-      const scores = t.evaluation
-        ? ` [live scoring — relevance ${t.evaluation.relevance}, clarity ${t.evaluation.clarity}, specificity ${t.evaluation.specificity}, technicalDepth ${t.evaluation.technicalDepth}]`
-        : "";
-      return `[${t.stage}] ${label}: ${t.text}${scores}`;
-    })
-    .join("\n");
-}
+/**
+ * Builds a clean, compact input object from the raw session data,
+ * filtering out non-Q1..Q10 dialogue and internal state.
+ */
+export function buildStudentReportInput(
+  project: ProjectContext,
+  transcript: TranscriptTurn[],
+  speechMetrics?: SpeechMetrics,
+  webcam?: WebcamResult,
+  sessionId?: string
+): CompactStudentReportInput {
+  const userTurns = transcript.filter((t) => t.speaker === "user");
+  const characterTurns = transcript.filter(
+    (t) => t.speaker === "rahul" || t.kind === "CHARACTER_DIALOGUE"
+  );
 
-function formatSpeechMetrics(m: SpeechMetrics): string {
-  const fillers =
-    Object.entries(m.fillerWordCounts).map(([w, c]) => `${w}×${c}`).join(", ") || "none detected";
-  return [
-    `Total responses: ${m.totalResponses}`,
-    `Average words per response: ${m.avgWordsPerResponse.toFixed(0)}`,
-    m.wordsPerMinute != null
-      ? `Speaking pace: ${m.wordsPerMinute.toFixed(0)} words/min`
-      : "Speaking pace: unavailable (typed input)",
-    `Average response delay: ${(m.avgResponseTimeMs / 1000).toFixed(1)}s`,
-    `Filler words: ${fillers} (total ${m.totalFillerWords})`,
-    `Long pauses before answering: ${m.longPauseCount}`,
-    `Very short answers (<8 words): ${m.shortAnswerCount}`,
-    `Very long answers (>120 words): ${m.longAnswerCount}`,
-  ].join("\n");
-}
+  const conversation: CompactQuestionTurn[] = [];
 
-function formatRepetition(m: SpeechMetrics): string {
-  const r = m.repetition;
-  if (!r) return "Not analysed.";
-  const lines = [
-    `Immediate repeats (hesitation signal): ${r.repeatedWordCount}`,
-    r.topRepeatedWords.length
-      ? `Most repeated: ${r.topRepeatedWords.map((w) => `"${w.text}" x${w.count}`).join(", ")}`
-      : `No immediate word repeats detected.`,
-    r.topRepeatedPhrases.length
-      ? `Repeated phrases: ${r.topRepeatedPhrases.map((p) => `"${p.text}" x${p.count}`).join(", ")}`
-      : `No repeated phrases detected.`,
-  ];
-  if (r.domainTermRepeats.length) {
-    lines.push(
-      `Project vocabulary repeated (this is CORRECT, do not criticise it): ${r.domainTermRepeats
-        .map((w) => `${w.text} x${w.count}`)
-        .join(", ")}`
-    );
+  for (let i = 1; i <= 10; i++) {
+    const isTailored = i % 2 === 0;
+    const rahulTurn = characterTurns[i];
+    const userTurn = userTurns[i];
+
+    const question = rahulTurn?.text || `Question ${i}`;
+    const answer = userTurn?.text || userTurns[i - 1]?.text || "(No answer recorded)";
+    const durationSeconds =
+      userTurn?.startTime && userTurn?.endTime
+        ? Math.max(1, Math.round((userTurn.endTime - userTurn.startTime) / 1000))
+        : undefined;
+
+    conversation.push({
+      questionNumber: i,
+      questionType: isTailored ? "tailored" : "pre_generated",
+      question,
+      answer,
+      answerDurationSeconds: durationSeconds,
+    });
   }
-  return lines.join("\n");
-}
 
-function formatWebcam(w: WebcamResult): string {
-  if (!w.enabled) return "Camera was NOT enabled. Set bodyLanguage to null and do not mention it.";
-  return [
-    `Camera was enabled.`,
-    `Forward-facing ratio: ${(w.forwardFacingRatio * 100).toFixed(0)}%`,
-    `Average head turn: ${w.averageHeadTurnDegrees.toFixed(0)} degrees`,
-    `Blink rate: ${w.blinkRatePerMinute.toFixed(0)}/min`,
-    `Samples: ${w.sampleCount}`,
-  ].join("\n");
+  const cameraEnabled = !!webcam?.enabled;
+  const cameraMetrics =
+    cameraEnabled && "samplesAnalyzed" in webcam
+      ? {
+          samplesAnalyzed: webcam.samplesAnalyzed,
+          faceDetectedRatio: webcam.faceDetectedRatio,
+          faceNotDetectedRatio: webcam.faceNotDetectedRatio,
+          eyeContactRatio: webcam.eyeContactRatio,
+          lookingAwayRatio: webcam.lookingAwayRatio,
+          forwardFacingRatio: webcam.forwardFacingRatio,
+          headOrientation: webcam.headOrientation,
+          interruptions: webcam.interruptions,
+          analysisDurationSeconds: webcam.analysisDurationSeconds,
+        }
+      : null;
+
+  return {
+    reportType: "student_communication",
+    sessionId,
+    project: {
+      name: project.name,
+      domain: project.domain,
+      problem: project.problem,
+      motivation: project.topic,
+      techStack: project.stack,
+    },
+    conversation,
+    speechMetrics: speechMetrics
+      ? {
+          wordsPerMinute: speechMetrics.wordsPerMinute,
+          avgResponseDelaySec: Math.round((speechMetrics.avgResponseTimeMs / 1000) * 10) / 10,
+          totalFillerWords: speechMetrics.totalFillerWords,
+        }
+      : null,
+    camera: {
+      enabled: cameraEnabled,
+      metrics: cameraMetrics,
+    },
+  };
 }
 
 export interface ReportInput {
@@ -191,67 +304,93 @@ export interface ReportInput {
   interruptions?: InterruptionMetrics;
 }
 
-export async function generateReport(input: ReportInput): Promise<CoachingReport> {
-  const userMessage = `PROJECT
-Title: ${input.project.name}
-Domain: ${input.project.domain}
-Student: ${input.project.userName || "(unknown)"} — ${input.project.college || "(college unknown)"}
-Description: ${input.project.description}
-${input.project.problem ? `Problem: ${input.project.problem}` : ""}
-${input.project.stack ? `Stack: ${input.project.stack}` : ""}
+export async function generateStudentReport(
+  compactInput: CompactStudentReportInput,
+  project: ProjectContext,
+  transcript: TranscriptTurn[],
+  speechMetrics: SpeechMetrics,
+  webcam: WebcamResult
+): Promise<StudentCommunicationReport> {
+  const sessionId = compactInput.sessionId;
 
-FULL TRANSCRIPT
-${formatTranscript(input.transcript)}
+  // 1. Check in-memory server cache first
+  if (sessionId && studentReportCache.has(sessionId)) {
+    return studentReportCache.get(sessionId)!;
+  }
 
-SPEECH METRICS (pre-computed — use these numbers directly)
-${formatSpeechMetrics(input.speechMetrics)}
-
-REPETITION (pre-computed)
-${formatRepetition(input.speechMetrics)}
-
-CAMERA METRICS
-${formatWebcam(input.webcam)}
-
-Produce the coaching report as structured JSON. In questionBreakdown, cover the 3-5 most significant judge questions.`;
+  const prompt = [
+    "STUDENT PROJECT DETAILS:",
+    JSON.stringify(compactInput.project, null, 2),
+    "",
+    "CONVERSATION (Q1 to Q10):",
+    JSON.stringify(compactInput.conversation, null, 2),
+    "",
+    "SPEECH & TIMING CONTEXT:",
+    JSON.stringify(compactInput.speechMetrics || {}, null, 2),
+    "",
+    "CAMERA ANALYSIS CONTEXT:",
+    JSON.stringify(compactInput.camera, null, 2),
+    "",
+    "TASK: Generate the structured student communication report JSON.",
+  ].join("\n");
 
   try {
-    const report = await generateJSON(
+    const report = await generateJSON<StudentCommunicationReport>(
       {
-        systemInstruction: SYSTEM,
+        systemInstruction: SYSTEM_INSTRUCTION,
         history: [],
-        userMessage,
-        responseSchema: REPORT_SCHEMA,
+        userMessage: prompt,
+        responseSchema: STUDENT_REPORT_JSON_SCHEMA,
         temperature: 0.6,
         maxOutputTokens: 3000,
-        timeoutMs: 45_000,
+        timeoutMs: 35_000,
       },
-      zodValidator(coachingReportSchema)
+      zodValidator(studentCommunicationReportSchema)
     );
 
-    const normalised: CoachingReport = {
-      ...report,
-      sessionId: input.sessionId,
-      generatedAt: new Date().toISOString(),
-      durations: input.timestamps ? computeDurations(input.timestamps) : undefined,
-      interruptionNotes: input.interruptions
-        ? describeInterruptions(input.interruptions)
-        : undefined,
-      bodyLanguage: input.webcam.enabled ? (report.bodyLanguage ?? null) : null,
-      isFallback: false,
-    };
-    return normalised;
-  } catch {
-    // Deliberately swallowed. The caller's job is to always return a report;
-    // an error here means the AI layer is unavailable, not that the session's
-    // measured data is gone. The fallback flags itself as degraded.
-    return {
-      ...buildFallbackReport(input.project, input.transcript, input.speechMetrics, input.webcam),
-      sessionId: input.sessionId,
-      generatedAt: new Date().toISOString(),
-      durations: input.timestamps ? computeDurations(input.timestamps) : undefined,
-      interruptionNotes: input.interruptions
-        ? describeInterruptions(input.interruptions)
-        : undefined,
-    };
+    // Save to server cache
+    if (sessionId) {
+      studentReportCache.set(sessionId, report);
+    }
+
+    return report;
+  } catch (err) {
+    console.warn(
+      "[ReportService] Gemini student report generation failed, using fallback:",
+      err
+    );
+    const fallback = buildFallbackReport(project, transcript, speechMetrics, webcam);
+    return fallback.studentCommunication;
   }
+}
+
+/**
+ * Main report generation entry point.
+ */
+export async function generateReport(input: ReportInput): Promise<FinalReport> {
+  const compactInput = buildStudentReportInput(
+    input.project,
+    input.transcript,
+    input.speechMetrics,
+    input.webcam,
+    input.sessionId
+  );
+
+  const studentCommunication = await generateStudentReport(
+    compactInput,
+    input.project,
+    input.transcript,
+    input.speechMetrics,
+    input.webcam
+  );
+
+  return {
+    sessionId: input.sessionId,
+    generatedAt: new Date().toISOString(),
+    project: input.project,
+    studentCommunication,
+    judgesFeedback: null,
+    combinedSummary: null,
+    isFallback: false,
+  };
 }

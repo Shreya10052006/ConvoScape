@@ -210,62 +210,163 @@ export interface SpeechMetrics {
   repetition: RepetitionMetrics;
 }
 
-export interface WebcamMetrics {
-  enabled: true;
-  forwardFacingRatio: number; // 0-1
-  averageHeadTurnDegrees: number;
-  blinkRatePerMinute: number;
-  sampleCount: number;
+export interface HeadOrientationBreakdown {
+  forwardRatio: number;
+  leftRatio: number;
+  rightRatio: number;
+  upRatio: number;
+  downRatio: number;
 }
 
-export interface WebcamDisabled {
+export interface CameraInterruptionMetrics {
+  faceLostCount: number;
+  prolongedLookAwayCount: number;
+}
+
+export interface CameraMetrics {
+  enabled: true;
+  samplesAnalyzed: number;
+  faceDetectedRatio: number;
+  faceNotDetectedRatio: number;
+  eyeContactRatio: number; // Apparent camera-facing / eye-contact consistency
+  lookingAwayRatio: number;
+  forwardFacingRatio: number;
+  headOrientation: HeadOrientationBreakdown;
+  interruptions?: CameraInterruptionMetrics;
+  analysisDurationSeconds: number;
+  averageHeadTurnDegrees?: number;
+  blinkRatePerMinute?: number;
+}
+
+export interface CameraDisabled {
   enabled: false;
 }
 
-export type WebcamResult = WebcamMetrics | WebcamDisabled;
+export type WebcamMetrics = CameraMetrics;
+export type WebcamResult = CameraMetrics | CameraDisabled;
 
-export interface QuestionBreakdown {
+export interface CompactQuestionTurn {
+  questionNumber: number;
+  questionType: "pre_generated" | "tailored";
   question: string;
-  answerSummary: string;
-  whatWasGood: string;
-  whatWasWeak: string;
-  whatTheJudgeWasTesting: string;
-  /** A stronger rewrite that must use the user's REAL project, not invented features. */
-  strongerAnswer: string;
+  answer: string;
+  answerDurationSeconds?: number;
 }
 
-export interface CoachingReport {
+export interface CompactStudentReportInput {
+  reportType: "student_communication";
   sessionId?: string;
-  generatedAt?: string;
-  durations?: SessionDurations;
-  overall: {
-    communicationScore: number;
-    technicalExplanationScore: number;
-    clarityScore: number;
-    confidenceScore: number;
-    questionHandlingScore: number;
-    specificityScore: number;
-    structureScore: number;
-    relevanceScore: number;
+  project: {
+    name: string;
+    domain: string;
+    problem?: string;
+    motivation?: string;
+    techStack?: string;
   };
-  whatYouDidWell: string[];
-  whatYouMissed: string[];
-  communicationAnalysis: string;
-  technicalCommunication: string;
-  questionBreakdown: QuestionBreakdown[];
-  speakingPatterns: string;
-  answerQuality: string;
-  bodyLanguage: string | null; // null when camera was off
-  mostImportantImprovement: string;
-  howToPractice: string;
-  narrativeSummary: string;
-  /** Distinguishes hesitation-repetition from deliberate emphasis. */
-  repetitionAnalysis?: string;
-  /** Deliberately hedged language — see InterruptionMetrics. */
-  interruptionNotes?: string;
-  /** True when the AI call failed and this was assembled from metrics alone. */
+  conversation: CompactQuestionTurn[];
+  speechMetrics?: {
+    wordsPerMinute?: number | null;
+    avgResponseDelaySec?: number;
+    totalFillerWords?: number;
+  } | null;
+  camera: {
+    enabled: boolean;
+    metrics?: {
+      samplesAnalyzed: number;
+      faceDetectedRatio: number;
+      faceNotDetectedRatio: number;
+      eyeContactRatio: number;
+      lookingAwayRatio: number;
+      forwardFacingRatio: number;
+      headOrientation: HeadOrientationBreakdown;
+      interruptions?: CameraInterruptionMetrics;
+      analysisDurationSeconds: number;
+    } | null;
+  };
+}
+
+export interface StudentQuestionFeedback {
+  questionNumber: number;
+  score: number; // 0-100
+  whatWorked: string[];
+  whatCouldImprove: string[];
+  betterApproach: string;
+  communicationTags: string[];
+}
+
+export interface StudentCommunicationReport {
+  reportType: "student_communication";
+  overallScore: number; // 0-100
+  overallSummary: string;
+  categoryScores: {
+    clarity: number; // 0-100
+    relevance: number;
+    structure: number;
+    technicalCommunication: number;
+    spontaneousThinking: number;
+    conciseness: number;
+  };
+  questionAnalysis: StudentQuestionFeedback[];
+  strongestAnswers: Array<{
+    questionNumber: number;
+    reason: string;
+  }>;
+  answersNeedingImprovement: Array<{
+    questionNumber: number;
+    reason: string;
+    improvement: string;
+  }>;
+  strengths: string[];
+  recurringWeaknesses: string[];
+  unexpectedQuestionPerformance: {
+    score: number;
+    summary: string;
+    observations: string[];
+  };
+  technicalCommunication: {
+    score: number;
+    summary: string;
+    strengths: string[];
+    improvements: string[];
+  };
+  improvementPlan: Array<{
+    priority: number;
+    area: string;
+    whyItMatters: string;
+    howToPractice: string;
+  }>;
+  nextSessionGoals: string[];
+  cameraAnalysis: null | {
+    enabled: true;
+    eyeContactRatio?: number;
+    forwardFacingRatio?: number;
+    faceDetectedRatio?: number;
+    headOrientation?: HeadOrientationBreakdown;
+    interruptions?: CameraInterruptionMetrics;
+    observations?: string;
+    note?: string;
+  };
+  speechAnalysis: null | {
+    wordsPerMinute?: number | null;
+    avgResponseDelaySec?: number;
+    totalFillerWords?: number;
+    summary?: string;
+  };
+}
+
+export interface FinalReport {
+  sessionId?: string;
+  generatedAt: string;
+  project: ProjectContext;
+  studentCommunication: StudentCommunicationReport;
+  judgesFeedback: null; // Future Judges tab
+  combinedSummary: null; // Future Combined evaluation
   isFallback?: boolean;
 }
+
+// Backwards compatibility alias
+export type CoachingReport = FinalReport;
+export type ConvoScapeSessionReport = FinalReport;
 
 export function newTurnId(): string {
   return `t_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;

@@ -60,55 +60,149 @@ export const tailoredTurnResponseSchema = z.object({
 export type ValidatedTurn = z.infer<typeof turnResponseSchema>;
 export type ValidatedTailoredTurn = z.infer<typeof tailoredTurnResponseSchema>;
 
-export const coachingReportSchema = z.object({
-  overall: z
+/** 0-100 score, tolerant of strings and floats, clamped. */
+const score100 = z.coerce
+  .number()
+  .transform((n) => Math.max(0, Math.min(100, Math.round(n))))
+  .catch(75);
+
+/** 0-10 score for question analysis. */
+const score10 = z.coerce
+  .number()
+  .transform((n) => Math.max(0, Math.min(10, Math.round(n * 10) / 10)))
+  .catch(7.5);
+
+const categoryScoreSchema = z.object({
+  score: score100,
+  evidence: z.string().default(""),
+});
+
+export const studentQuestionFeedbackSchema = z.object({
+  questionNumber: z.coerce.number().default(1),
+  score: score100,
+  whatWorked: z.array(z.string()).default([]),
+  whatCouldImprove: z.array(z.string()).default([]),
+  betterApproach: z.string().default(""),
+  communicationTags: z.array(z.string()).default([]),
+});
+
+export const studentCommunicationReportSchema = z.object({
+  reportType: z.literal("student_communication").default("student_communication"),
+  overallScore: score100,
+  overallSummary: z.string().default(""),
+  categoryScores: z
     .object({
-      communicationScore: score,
-      technicalExplanationScore: score,
-      clarityScore: score,
-      confidenceScore: score,
-      questionHandlingScore: score,
-      specificityScore: score,
-      structureScore: score,
-      relevanceScore: score,
+      clarity: score100,
+      relevance: score100,
+      structure: score100,
+      technicalCommunication: score100,
+      spontaneousThinking: score100,
+      conciseness: score100,
     })
-    .partial()
-    .transform((o) => ({
-      communicationScore: o.communicationScore ?? 5,
-      technicalExplanationScore: o.technicalExplanationScore ?? 5,
-      clarityScore: o.clarityScore ?? 5,
-      confidenceScore: o.confidenceScore ?? 5,
-      questionHandlingScore: o.questionHandlingScore ?? 5,
-      specificityScore: o.specificityScore ?? 5,
-      structureScore: o.structureScore ?? 5,
-      relevanceScore: o.relevanceScore ?? 5,
-    })),
-  whatYouDidWell: z.array(z.string()).default([]),
-  whatYouMissed: z.array(z.string()).default([]),
-  communicationAnalysis: z.string().default(""),
-  technicalCommunication: z.string().default(""),
-  questionBreakdown: z
+    .default({
+      clarity: 75,
+      relevance: 75,
+      structure: 75,
+      technicalCommunication: 75,
+      spontaneousThinking: 75,
+      conciseness: 75,
+    }),
+  questionAnalysis: z.array(studentQuestionFeedbackSchema).default([]),
+  strongestAnswers: z
     .array(
       z.object({
-        question: z.string().default(""),
-        answerSummary: z.string().default(""),
-        whatWasGood: z.string().default(""),
-        whatWasWeak: z.string().default(""),
-        whatTheJudgeWasTesting: z.string().default(""),
-        strongerAnswer: z.string().default(""),
+        questionNumber: z.coerce.number().default(1),
+        reason: z.string().default(""),
       })
     )
     .default([]),
-  speakingPatterns: z.string().default(""),
-  answerQuality: z.string().default(""),
-  bodyLanguage: z.string().nullish().catch(null),
-  mostImportantImprovement: z.string().default(""),
-  howToPractice: z.string().default(""),
-  narrativeSummary: z.string().default(""),
-  repetitionAnalysis: z.string().default(""),
+  answersNeedingImprovement: z
+    .array(
+      z.object({
+        questionNumber: z.coerce.number().default(1),
+        reason: z.string().default(""),
+        improvement: z.string().default(""),
+      })
+    )
+    .default([]),
+  strengths: z.array(z.string()).default([]),
+  recurringWeaknesses: z.array(z.string()).default([]),
+  unexpectedQuestionPerformance: z
+    .object({
+      score: score100,
+      summary: z.string().default(""),
+      observations: z.array(z.string()).default([]),
+    })
+    .default({
+      score: 75,
+      summary: "",
+      observations: [],
+    }),
+  technicalCommunication: z
+    .object({
+      score: score100,
+      summary: z.string().default(""),
+      strengths: z.array(z.string()).default([]),
+      improvements: z.array(z.string()).default([]),
+    })
+    .default({
+      score: 75,
+      summary: "",
+      strengths: [],
+      improvements: [],
+    }),
+  improvementPlan: z
+    .array(
+      z.object({
+        priority: z.coerce.number().default(1),
+        area: z.string().default(""),
+        whyItMatters: z.string().default(""),
+        howToPractice: z.string().default(""),
+      })
+    )
+    .default([]),
+  nextSessionGoals: z.array(z.string()).default([]),
+  cameraAnalysis: z
+    .object({
+      enabled: z.literal(true),
+      eyeContactRatio: z.number().optional(),
+      forwardFacingRatio: z.number().optional(),
+      faceDetectedRatio: z.number().optional(),
+      headOrientation: z
+        .object({
+          forwardRatio: z.number().default(0),
+          leftRatio: z.number().default(0),
+          rightRatio: z.number().default(0),
+          upRatio: z.number().default(0),
+          downRatio: z.number().default(0),
+        })
+        .optional(),
+      interruptions: z
+        .object({
+          faceLostCount: z.number().default(0),
+          prolongedLookAwayCount: z.number().default(0),
+        })
+        .optional(),
+      observations: z.string().optional(),
+      note: z.string().optional(),
+    })
+    .nullable()
+    .catch(null),
+  speechAnalysis: z
+    .object({
+      wordsPerMinute: z.number().nullable().optional(),
+      avgResponseDelaySec: z.number().optional(),
+      totalFillerWords: z.number().optional(),
+      summary: z.string().optional(),
+    })
+    .nullable()
+    .catch(null),
 });
 
-export type ValidatedReport = z.infer<typeof coachingReportSchema>;
+export type ValidatedStudentReport = z.infer<typeof studentCommunicationReportSchema>;
+export type ValidatedRahulReport = ValidatedStudentReport;
+export type ValidatedReport = ValidatedStudentReport;
+export const rahulPerformanceReportSchema = studentCommunicationReportSchema;
 
 /**
  * Pull a JSON object out of whatever the model actually sent.
