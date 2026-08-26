@@ -1,18 +1,11 @@
 /**
  * faceLandmarks.ts
  * ---------------------------------------------------------------------------
- * MediaPipe Face Landmarker, running entirely in the browser via WASM. No
- * video frame or image ever leaves the device — only the derived numeric
- * metrics in behaviorMetrics.ts do, and only if the caller chooses to send
- * them to the report endpoint.
+ * MediaPipe Face Landmarker, running entirely in the browser via WASM.
+ * No video frame, picture, or canvas ever leaves the client device.
+ * Only lightweight mathematical aggregates are generated.
  *
- * Explicitly NOT using YOLO or any object-detection model: this is about the
- * user's own face/head behavior, not detecting objects in the room, so a
- * face-landmark model is the right-sized tool and YOLO would be unused weight.
- *
- * Sampling, not every frame: analyzing 30-60fps of video is wasted work for
- * signals (head orientation, blink rate) that don't change that fast. We
- * sample a few times a second — see behaviorMetrics.ts's SAMPLE_INTERVAL_MS.
+ * Runs locally on periodic samples (3-4 Hz).
  */
 
 import type { FaceLandmarker } from "@mediapipe/tasks-vision";
@@ -24,9 +17,6 @@ async function loadLandmarker(): Promise<FaceLandmarker> {
 
   landmarkerPromise = (async () => {
     const vision = await import("@mediapipe/tasks-vision");
-    // WasmFileset isn't exported by the package, only used internally by its own
-    // types — so the fileset is typed structurally from what forVisionTasks
-    // actually returns, rather than naming a type we can't import.
     const fileset = await vision.FilesetResolver.forVisionTasks(
       "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
     );
@@ -48,50 +38,78 @@ async function loadLandmarker(): Promise<FaceLandmarker> {
 
 export interface FaceSample {
   present: boolean;
-  /** Approximate yaw in degrees, derived from the facial transform matrix. 0 = facing camera. */
+  /** Approximate yaw in degrees (negative = left, positive = right, ~0 = facing camera). */
   yawDegrees: number;
-  /** Blendshape scores for eye closure, used to detect blinks. */
+  /** Approximate pitch in degrees (negative = looking down, positive = looking up, ~0 = level). */
+  pitchDegrees: number;
+  /** Blendshape scores for eye closure [0..1]. */
   leftEyeBlink: number;
   rightEyeBlink: number;
+  /** Gaze diversion score [0..1] derived from eyeLook blendshapes. */
+  gazeAversionScore: number;
   timestamp: number;
 }
 
-function yawFromMatrix(m: number[]): number {
-  // Column-major 4x4. The (0,2) / (2,2) pair gives yaw for a rotation matrix
-  // in this convention; good enough for a coarse "facing camera or not" signal
-  // — this is a wellness/coaching cue, not a precision tracking system.
+function anglesFromMatrix(m: number[]): { yaw: number; pitch: number } {
+  // Column-major 4x4 rotation matrix:
+  // m[8] = R02, m[9] = R12, m[10] = R22
   const r02 = m[8];
+  const r12 = m[9];
   const r22 = m[10];
-  return (Math.atan2(r02, r22) * 180) / Math.PI;
+
+  const yaw = (Math.atan2(r02, r22) * 180) / Math.PI;
+  const pitch = (Math.atan2(-r12, Math.sqrt(r02 * r02 + r22 * r22)) * 180) / Math.PI;
+
+  return { yaw, pitch };
 }
 
-export async function detectFace(video: HTMLVideoElement, timestampMs: number): Promise<FaceSample | null> {
+export async function detectFace(
+  video: HTMLVideoElement,
+  timestampMs: number
+): Promise<FaceSample | null> {
   try {
     const landmarker = await loadLandmarker();
     const result = landmarker.detectForVideo(video, timestampMs);
 
     if (!result.faceLandmarks?.length) {
-      return { present: false, yawDegrees: 0, leftEyeBlink: 0, rightEyeBlink: 0, timestamp: timestampMs };
+      return {
+        present: false,
+        yawDegrees: 0,
+        pitchDegrees: 0,
+        leftEyeBlink: 0,
+        rightEyeBlink: 0,
+        gazeAversionScore: 0,
+        timestamp: timestampMs,
+      };
     }
 
     const matrix = result.facialTransformationMatrixes?.[0]?.data;
-    const yaw = matrix ? yawFromMatrix(matrix) : 0;
+    const { yaw, pitch } = matrix ? anglesFromMatrix(matrix) : { yaw: 0, pitch: 0 };
 
     const blendshapes = result.faceBlendshapes?.[0]?.categories ?? [];
     const find = (name: string) => blendshapes.find((c) => c.categoryName === name)?.score ?? 0;
 
+    const leftBlink = find("eyeBlinkLeft");
+    const rightBlink = find("eyeBlinkRight");
+
+    // Coarse eye gaze aversion estimation from blendshapes
+    const lookOut = Math.max(find("eyeLookOutLeft"), find("eyeLookOutRight"));
+    const lookIn = Math.max(find("eyeLookInLeft"), find("eyeLookInRight"));
+    const lookDown = Math.max(find("eyeLookDownLeft"), find("eyeLookDownRight"));
+    const lookUp = Math.max(find("eyeLookUpLeft"), find("eyeLookUpRight"));
+    const gazeAversion = Math.max(lookOut, lookIn, lookDown, lookUp);
+
     return {
       present: true,
       yawDegrees: yaw,
-      leftEyeBlink: find("eyeBlinkLeft"),
-      rightEyeBlink: find("eyeBlinkRight"),
+      pitchDegrees: pitch,
+      leftEyeBlink: leftBlink,
+      rightEyeBlink: rightBlink,
+      gazeAversionScore: gazeAversion,
       timestamp: timestampMs,
     };
   } catch {
-    // Model failed to load or run (e.g. no GPU delegate, blocked CDN). Treated
-    // as "no signal this frame" rather than crashing the session — camera
-    // analysis is optional and its failure must never take the conversation
-    // down with it.
+    // MediaPipe unavailable or failed to execute — fail softly
     return null;
   }
 }
