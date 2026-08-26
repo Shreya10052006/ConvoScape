@@ -33,7 +33,7 @@ try:
     
     onnx_fp32 = os.path.abspath('backend/models/wav2lip_gan.onnx')
     onnx_int8 = os.path.abspath('backend/models/wav2lip_gan_int8.onnx')
-    model_path = onnx_fp32 if 'DmlExecutionProvider' in chosen_providers else (onnx_int8 if os.path.exists(onnx_int8) else onnx_fp32)
+    model_path = onnx_int8 if os.path.exists(onnx_int8) else onnx_fp32
     
     if os.path.exists(model_path):
         sess_opts = ort.SessionOptions()
