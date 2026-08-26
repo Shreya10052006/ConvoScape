@@ -15,14 +15,6 @@ export async function POST(req: NextRequest) {
   }
 
   if (body.warmup) {
-    const modalUrl = process.env.MODAL_WAV2LIP_URL;
-    if (modalUrl) {
-      void fetch(modalUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ warmup: true }),
-      }).catch(() => null);
-    }
     return NextResponse.json({ warmed: true });
   }
 
