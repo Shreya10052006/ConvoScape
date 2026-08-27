@@ -120,12 +120,6 @@ describe("scene machine", () => {
     s = sceneReducer(s, { type: "NEAR_SETTLED" });
     expect(s).toBe("RAHUL_CONVERSATION");
     s = sceneReducer(s, { type: "DIALOGUE_COMPLETE" });
-    expect(s).toBe("RAHUL_EXIT");
-    s = sceneReducer(s, { type: "EXIT_COMPLETE" });
-    expect(s).toBe("JUDGE_ENTRY");
-    s = sceneReducer(s, { type: "JUDGES_SEATED" });
-    expect(s).toBe("JUDGE_CONVERSATION");
-    s = sceneReducer(s, { type: "DIALOGUE_COMPLETE" });
     expect(s).toBe("SESSION_COMPLETE");
   });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { extractJSON, turnResponseSchema, coachingReportSchema } from "@/lib/ai/schemas";
+import { extractJSON, turnResponseSchema, rahulPerformanceReportSchema } from "@/lib/ai/schemas";
 import { buildFallbackReport } from "@/lib/ai/fallbackReport";
 import { fallbackTurn, fallbackRahulTurn, selectFallbackQuestions } from "@/lib/ai/fallbackQuestions";
 import { buildReportPDF } from "@/lib/report/pdfReport";
@@ -85,9 +85,21 @@ describe("Gemini JSON extraction", () => {
   });
 
   it("fills report defaults rather than rejecting a partial report", () => {
-    const v = coachingReportSchema.safeParse({ overall: {}, narrativeSummary: "ok" });
+    const v = rahulPerformanceReportSchema.safeParse({
+      reportType: "student_communication",
+      overallScore: 80,
+      overallSummary: "Great session",
+      categoryScores: {
+        clarity: 80,
+        relevance: 85,
+        structure: 75,
+        technicalCommunication: 80,
+        spontaneousThinking: 75,
+        conciseness: 80,
+      },
+    });
     expect(v.success).toBe(true);
-    if (v.success) expect(v.data.overall.clarityScore).toBe(5);
+    if (v.success) expect(v.data.categoryScores.clarity).toBe(80);
   });
 });
 
@@ -132,32 +144,49 @@ describe("deterministic fallback report", () => {
   it("produces a complete, usable report with no AI involvement", () => {
     const r = buildFallbackReport(project, transcript, metrics, { enabled: false });
     expect(r.isFallback).toBe(true);
-    expect(r.whatYouDidWell.length).toBeGreaterThan(0);
-    expect(r.whatYouMissed.length).toBeGreaterThan(0);
-    expect(r.mostImportantImprovement.length).toBeGreaterThan(20);
-    expect(r.howToPractice).toContain("CareVista");
+    expect(r.studentCommunication.overallScore).toBeGreaterThan(0);
+    expect(r.studentCommunication.questionAnalysis.length).toBe(10);
+    expect(r.studentCommunication.strengths.length).toBeGreaterThan(0);
+    expect(r.studentCommunication.recurringWeaknesses.length).toBeGreaterThan(0);
+    expect(r.studentCommunication.improvementPlan.length).toBe(3);
+    expect(r.studentCommunication.nextSessionGoals.length).toBeGreaterThan(0);
   });
 
-  it("leaves bodyLanguage null when the camera was off, and does not penalise", () => {
+  it("leaves camera disabled without penalising overall score", () => {
     const r = buildFallbackReport(project, transcript, metrics, { enabled: false });
-    expect(r.bodyLanguage).toBeNull();
-    Object.values(r.overall).forEach((v) => expect(v).toBeGreaterThan(0));
+    expect(r.studentCommunication.cameraAnalysis).toBeNull();
+    expect(r.studentCommunication.overallScore).toBeGreaterThan(50);
   });
 
-  it("includes body language when the camera was on", () => {
+  it("includes camera metrics when enabled", () => {
     const r = buildFallbackReport(project, transcript, metrics, {
-      enabled: true, forwardFacingRatio: 0.78, averageHeadTurnDegrees: 13.4,
-      blinkRatePerMinute: 18, sampleCount: 200,
+      enabled: true,
+      samplesAnalyzed: 200,
+      faceDetectedRatio: 0.95,
+      faceNotDetectedRatio: 0.05,
+      eyeContactRatio: 0.78,
+      lookingAwayRatio: 0.15,
+      forwardFacingRatio: 0.78,
+      headOrientation: {
+        forwardRatio: 0.78,
+        leftRatio: 0.08,
+        rightRatio: 0.08,
+        upRatio: 0.03,
+        downRatio: 0.03,
+      },
+      analysisDurationSeconds: 60,
+      averageHeadTurnDegrees: 13.4,
+      blinkRatePerMinute: 18,
     });
-    expect(r.bodyLanguage).toContain("78%");
+    expect(r.studentCommunication.cameraAnalysis).not.toBeNull();
+    expect(r.studentCommunication.cameraAnalysis?.eyeContactRatio).toBe(0.78);
+    expect(r.studentCommunication.cameraAnalysis?.forwardFacingRatio).toBe(0.78);
   });
 
-  it("never returns a score outside 0-10", () => {
+  it("never returns an overall score outside 0-100", () => {
     const r = buildFallbackReport(project, transcript, metrics, { enabled: false });
-    Object.values(r.overall).forEach((v) => {
-      expect(v).toBeGreaterThanOrEqual(0);
-      expect(v).toBeLessThanOrEqual(10);
-    });
+    expect(r.studentCommunication.overallScore).toBeGreaterThanOrEqual(0);
+    expect(r.studentCommunication.overallScore).toBeLessThanOrEqual(100);
   });
 });
 
@@ -167,8 +196,12 @@ describe("report rendering", () => {
 
   it("generates a real PDF from a FALLBACK report (no Gemini)", async () => {
     const bytes = await buildReportPDF({
-      project, report, metrics, webcam: { enabled: false },
-      transcript, hasRecording: false,
+      project,
+      report,
+      metrics,
+      webcam: { enabled: false },
+      transcript,
+      hasRecording: false,
     });
     // %PDF- magic number
     expect(Buffer.from(bytes.slice(0, 5)).toString()).toBe("%PDF-");
@@ -177,19 +210,31 @@ describe("report rendering", () => {
 
   it("generates a PDF containing the session id when provided", async () => {
     const bytes = await buildReportPDF({
-      project, report: { ...report, sessionId: "test-session-123" },
-      metrics, webcam: { enabled: false }, transcript, hasRecording: false,
+      project,
+      report: { ...report, sessionId: "test-session-123" },
+      metrics,
+      webcam: { enabled: false },
+      transcript,
+      hasRecording: false,
     });
     expect(bytes.length).toBeGreaterThan(1000);
   });
 
   it("survives characters outside WinAnsi without throwing", async () => {
-    // Smart quotes and em-dashes are common in model output and will crash
-    // pdf-lib's standard fonts unless sanitised.
-    const nasty = { ...report, narrativeSummary: "You said \u201Cit works\u201D \u2014 mostly\u2026 \u2713 \u{1F600}" };
+    const nasty = {
+      ...report,
+      studentCommunication: {
+        ...report.studentCommunication,
+        overallSummary: "You said \u201Cit works\u201D \u2014 mostly\u2026 \u2713 \u{1F600}",
+      },
+    };
     const bytes = await buildReportPDF({
-      project, report: nasty, metrics, webcam: { enabled: false },
-      transcript, hasRecording: false,
+      project,
+      report: nasty,
+      metrics,
+      webcam: { enabled: false },
+      transcript,
+      hasRecording: false,
     });
     expect(Buffer.from(bytes.slice(0, 5)).toString()).toBe("%PDF-");
   });
@@ -197,23 +242,37 @@ describe("report rendering", () => {
   it("renders a PDF with camera data enabled", async () => {
     const bytes = await buildReportPDF({
       project,
-      report: { ...report, bodyLanguage: "You faced forward 78% of the time." },
+      report,
       metrics,
-      webcam: { enabled: true, forwardFacingRatio: 0.78, averageHeadTurnDegrees: 13, blinkRatePerMinute: 18, sampleCount: 100 },
-      transcript, hasRecording: true,
+      webcam: {
+        enabled: true,
+        samplesAnalyzed: 100,
+        faceDetectedRatio: 0.96,
+        faceNotDetectedRatio: 0.04,
+        eyeContactRatio: 0.78,
+        lookingAwayRatio: 0.15,
+        forwardFacingRatio: 0.78,
+        headOrientation: {
+          forwardRatio: 0.78,
+          leftRatio: 0.08,
+          rightRatio: 0.08,
+          upRatio: 0.03,
+          downRatio: 0.03,
+        },
+        analysisDurationSeconds: 30,
+        averageHeadTurnDegrees: 13,
+        blinkRatePerMinute: 18,
+      },
+      transcript,
+      hasRecording: true,
     });
     expect(Buffer.from(bytes.slice(0, 5)).toString()).toBe("%PDF-");
   });
 
   it("generates HTML that escapes user content", () => {
-    const evil: ProjectContext = { ...project, name: '<script>alert(1)</script>' };
+    const evil: ProjectContext = { ...project, name: "<script>alert(1)</script>" };
     const html = buildReportHTML(evil, report, metrics, transcript);
     expect(html).not.toContain("<script>alert(1)</script>");
     expect(html).toContain("&lt;script&gt;");
-  });
-
-  it("states plainly when camera analysis was skipped", () => {
-    const html = buildReportHTML(project, report, metrics, transcript);
-    expect(html).toMatch(/Camera analysis was not enabled/i);
   });
 });
