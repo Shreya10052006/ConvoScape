@@ -150,27 +150,13 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
   const handleStageComplete = useCallback(() => {
     const finished = stageRef.current;
 
-    // Close the finishing phase and open the next, once each.
+    // Close the finishing phase and stamp timestamps
     if (finished === "rahul") stamp("rahulPhaseEndedAt");
     if (finished === "presentation") stamp("presentationEndedAt");
     if (finished === "judgeQA") stamp("judgeQnaEndedAt");
 
-    if (finished === "rahul" && HIDE_JUDGES_FOR_NOW) {
-      console.log("[Experience] Rahul conversation completed. Judges are hidden for now until Rahul phase is approved.");
-      setRahulSpeechState("LISTENING");
-      return;
-    }
-
     dispatchConversation({ type: "ADVANCE_STAGE" });
-
-    // Rahul's phase ending is the only boundary that changes who is on screen.
-    if (finished === "rahul") {
-      sceneSend({ type: "DIALOGUE_COMPLETE" }); // RAHUL_CONVERSATION -> RAHUL_EXIT
-    } else if (finished === "judgeQA") {
-      sceneSend({ type: "DIALOGUE_COMPLETE" }); // JUDGE_CONVERSATION -> SESSION_COMPLETE
-    }
-    // `stamp` is stable (useCallback with an empty dep array) so listing it is
-    // free; sceneSend is a useReducer dispatch and stable by contract.
+    sceneSend({ type: "DIALOGUE_COMPLETE" }); // RAHUL_CONVERSATION -> SESSION_COMPLETE
   }, [stamp]);
 
   // --- Session end: freeze metrics, stop capture ----------------------------
