@@ -16,4 +16,17 @@ export const RAHUL_VIDEO_ASSETS: RahulVideoAssets = {
   leaving: null,
 };
 
+export interface JudgesVideoAssets {
+  arrival: string;
+  listening: string;
+  leaving: string;
+}
+
+export const JUDGES_VIDEO_ASSETS: JudgesVideoAssets = {
+  arrival: "/assets/judge_arrival.mp4",
+  listening: "/assets/judge_listening.mp4",
+  leaving: "/assets/judges_leaving.mp4",
+};
+
 export const IS_CALIBRATED = true;
+

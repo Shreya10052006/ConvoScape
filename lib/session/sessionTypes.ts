@@ -7,6 +7,8 @@
  */
 
 export interface ProjectContext {
+  /** The team name entered by the user. */
+  teamName?: string;
   /** The user's own name — Rahul and the judges address them by it. */
   userName: string;
   college: string;
@@ -23,10 +25,51 @@ export interface ProjectContext {
 /** Who is speaking in a given turn. */
 export type Speaker = "rahul" | "judge1" | "judge2" | "user" | "system";
 
+export interface AudioPauseTiming {
+  speechStartTime: number | null;
+  speechEndTime: number | null;
+  totalDurationSeconds: number;
+  speakingDurationSeconds: number;
+  silenceDurationSeconds: number;
+  pauseCount: number;
+  longPauseCount: number;
+  longPauseDurations: number[];
+  longestPauseSeconds: number;
+  avgPauseDurationSeconds: number;
+  isAudioVad: boolean;
+}
+
+export interface DetailedUserAnswer {
+  rawTranscript: string;
+  normalizedTranscript?: string;
+  durationSeconds?: number;
+  wordCount: number;
+  fillerWords: string[];
+  fillerCount: number;
+  fillerBreakdown: Record<string, number>;
+  repeatedWords: string[];
+  repetitionCount: number;
+  repeatedPhrases?: string[];
+  falseStarts?: string[];
+  pauseCount?: number;
+  longPauseCount?: number;
+  longPauseDurations?: number[];
+  longestPauseSeconds?: number;
+  avgPauseDurationSeconds?: number;
+  speakingDurationSeconds?: number;
+  silenceDurationSeconds?: number;
+  speechStartTime?: number;
+  speechEndTime?: number;
+  isApproximateTiming?: boolean;
+}
+
 export interface TranscriptTurn {
   id: string;
   speaker: Speaker;
   text: string;
+  rawTranscript?: string;
+  normalizedTranscript?: string;
+  detailedAnswer?: DetailedUserAnswer;
   /** Which conversation stage this turn belongs to, for per-stage slicing and
    * for the report's transcript formatting. */
   stage: ConversationStage;
@@ -205,6 +248,10 @@ export interface SpeechMetrics {
   fillerWordCounts: Record<string, number>;
   totalFillerWords: number;
   longPauseCount: number;
+  totalPauseCount?: number;
+  avgPauseDurationSeconds?: number;
+  totalSilenceSeconds?: number;
+  falseStartCount?: number;
   shortAnswerCount: number; // under ~8 words
   longAnswerCount: number; // over ~120 words
   repetition: RepetitionMetrics;
@@ -247,10 +294,25 @@ export type WebcamResult = CameraMetrics | CameraDisabled;
 
 export interface CompactQuestionTurn {
   questionNumber: number;
-  questionType: "pre_generated" | "tailored";
-  question: string;
-  answer: string;
+  questionType?: "pre_generated" | "tailored";
+  stage?: ConversationStage;
+  speaker?: Speaker;
+  question?: string;
+  questionText?: string;
+  answer?: string; // Authoritative raw transcript
+  userAnswer?: string;
+  rawTranscript?: string;
+  normalizedTranscript?: string;
+  detailedAnswer?: DetailedUserAnswer;
   answerDurationSeconds?: number;
+  durationSeconds?: number;
+  speakingDurationSeconds?: number;
+  silenceDurationSeconds?: number;
+  wordCount?: number;
+  fillerWords?: string[];
+  fillerCount?: number;
+  pauseCount?: number;
+  longPauseCount?: number;
 }
 
 export interface CompactStudentReportInput {
@@ -268,6 +330,11 @@ export interface CompactStudentReportInput {
     wordsPerMinute?: number | null;
     avgResponseDelaySec?: number;
     totalFillerWords?: number;
+    totalPauseCount?: number;
+    longPauseCount?: number;
+    avgPauseDurationSec?: number;
+    falseStartCount?: number;
+    repeatedWordCount?: number;
   } | null;
   camera: {
     enabled: boolean;
@@ -350,8 +417,55 @@ export interface StudentCommunicationReport {
     wordsPerMinute?: number | null;
     avgResponseDelaySec?: number;
     totalFillerWords?: number;
+    totalPauseCount?: number;
+    longPauseCount?: number;
+    avgPauseDurationSec?: number;
     summary?: string;
   };
+}
+
+export interface JudgeQuestionFeedback {
+  questionNumber: number;
+  score: number;
+  judgeName: string;
+  questionTopic: string;
+  technicalCritique: string;
+  strengths: string[];
+  areasToDeepen: string[];
+  practicalRecommendation: string;
+}
+
+export interface JudgesEvaluationReport {
+  reportType: "judges_evaluation";
+  overallHackathonScore: number;
+  verdictSummary: string;
+  categoryScores: {
+    technicalDepth: number;
+    architectureAndDesign: number;
+    problemSolvingAndReasoning: number;
+    feasibilityAndViability: number;
+    presentationAndDefense: number;
+  };
+  questionAnalysis: JudgeQuestionFeedback[];
+  topTechnicalStrengths: string[];
+  criticalVulnerabilitiesOrGaps: string[];
+  edgeCaseHandlingAssessment: {
+    score: number;
+    summary: string;
+    observations: string[];
+  };
+  scalabilityAndArchitectureReview: {
+    score: number;
+    summary: string;
+    pros: string[];
+    cons: string[];
+  };
+  judgesRecommendations: Array<{
+    priority: number;
+    title: string;
+    rationale: string;
+    actionableSteps: string;
+  }>;
 }
 
 export interface FinalReport {
@@ -359,8 +473,8 @@ export interface FinalReport {
   generatedAt: string;
   project: ProjectContext;
   studentCommunication: StudentCommunicationReport;
-  judgesFeedback: null; // Future Judges tab
-  combinedSummary: null; // Future Combined evaluation
+  judgesFeedback: JudgesEvaluationReport | null;
+  combinedSummary: string | null;
   isFallback?: boolean;
 }
 
