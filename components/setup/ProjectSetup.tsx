@@ -23,11 +23,12 @@ const QUESTIONS: Array<{
   required: boolean;
   multiline?: boolean;
 }> = [
+  { key: "teamName", prompt: "What's your team name?", hint: "CareVista / Team Alpha", required: true },
   { key: "name", prompt: "What's the project called?", hint: "CareVista", required: true },
   { key: "domain", prompt: "What domain does it fall under?", hint: "HealthTech, FinTech, EdTech, Sustainability…", required: true },
   { key: "topic", prompt: "In a few words, what is it?", hint: "AI-powered rural telemedicine", required: true },
   { key: "problem", prompt: "What problem does it solve?", hint: "Lack of access to specialized care…", required: true, multiline: true },
-  { key: "stack", prompt: "What did you build it with?", hint: "Tech Stack (Optional)", required: false },
+  { key: "stack", prompt: "What did you build it with?", hint: "Next.js, PostgreSQL, WebRTC (Optional)", required: false },
 ];
 
 export default function ProjectSetup({ onComplete }: { onComplete: (p: ProjectContext) => void }) {
@@ -41,6 +42,7 @@ export default function ProjectSetup({ onComplete }: { onComplete: (p: ProjectCo
     if (!canAdvance) return;
     if (step === QUESTIONS.length - 1) {
       onComplete({
+        teamName: values.teamName || values.name || "CareVista",
         userName: values.userName || "Alex",
         college: values.college || "Tech University",
         name: values.name ?? "",
