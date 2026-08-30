@@ -3,22 +3,17 @@
 /**
  * SceneController.tsx
  * ---------------------------------------------------------------------------
- * Renders bodies for a given scene state. As of the full-MVP build, scene
- * state is CONTROLLED from outside (app/page.tsx owns the reducer) rather than
- * owned here — the orchestrator needs to fire DIALOGUE_COMPLETE when the AI
- * conversation ends, and REPORT_READY when the report finishes generating,
- * neither of which this component can know about on its own. That's the
- * boundary from the Phase 1 docstring, just drawn one level higher: this file
- * still knows nothing about Gemini, the microphone, or the camera. It only
- * knows how to turn a SceneState into pixels, plus the handful of
- * animation-driven transitions (a walk finishing, a timer elapsing) that are
- * purely visual and have no business living in the orchestrator.
+ * Renders characters and background video layers for the active scene state.
+ * Manages zero-black-screen transitions between:
+ * - Rahul stages (walking, speaking, listening)
+ * - Judge stages (arrival, speaking, listening, leaving)
  */
 
-import { useRef } from "react";
+import React from "react";
 import type { SceneEvent, SceneState } from "@/lib/session/sceneMachine";
 import { IS_CALIBRATED } from "@/lib/scene/sceneConfig";
 import RahulVideoController, { type RahulVideoState } from "./RahulVideoController";
+import JudgesVideoController, { type JudgesVideoState } from "./JudgesVideoController";
 
 interface Props {
   scene: SceneState;
@@ -28,6 +23,14 @@ interface Props {
   onRahulSpeakingEnded?: () => void;
   onRahulSpeakingError?: () => void;
   onRahulWalkingEnded?: () => void;
+
+  judgeVideoState?: JudgesVideoState;
+  judgeSpeakingVideoUrl?: string | null;
+  onJudgeSpeakingEnded?: () => void;
+  onJudgeSpeakingError?: () => void;
+  onJudgeArrivalEnded?: () => void;
+  onJudgeLeavingEnded?: () => void;
+
   hallAvailable?: boolean;
   charactersAvailable?: boolean;
 }
@@ -40,16 +43,48 @@ export default function SceneController({
   onRahulSpeakingEnded,
   onRahulSpeakingError,
   onRahulWalkingEnded,
+
+  judgeVideoState = "IDLE",
+  judgeSpeakingVideoUrl = null,
+  onJudgeSpeakingEnded,
+  onJudgeSpeakingError,
+  onJudgeArrivalEnded,
+  onJudgeLeavingEnded,
 }: Props) {
+  const isJudgeScene = scene === "JUDGE_ENTRY" || scene === "JUDGE_CONVERSATION";
+
   return (
     <div className="fixed inset-0 overflow-hidden bg-black">
-      <RahulVideoController
-        state={rahulVideoState}
-        speakingVideoUrl={rahulSpeakingVideoUrl}
-        onSpeakingEnded={onRahulSpeakingEnded}
-        onSpeakingError={onRahulSpeakingError}
-        onWalkingEnded={onRahulWalkingEnded}
-      />
+      {/* 1. Rahul Video Layer */}
+      <div
+        className={`absolute inset-0 transition-opacity duration-500 ${
+          isJudgeScene ? "opacity-0 pointer-events-none" : "opacity-100"
+        }`}
+      >
+        <RahulVideoController
+          state={rahulVideoState}
+          speakingVideoUrl={rahulSpeakingVideoUrl}
+          onSpeakingEnded={onRahulSpeakingEnded}
+          onSpeakingError={onRahulSpeakingError}
+          onWalkingEnded={onRahulWalkingEnded}
+        />
+      </div>
+
+      {/* 2. Judges Video Layer */}
+      <div
+        className={`absolute inset-0 transition-opacity duration-500 ${
+          isJudgeScene ? "opacity-100" : "opacity-0 pointer-events-none"
+        }`}
+      >
+        <JudgesVideoController
+          state={judgeVideoState}
+          speakingVideoUrl={judgeSpeakingVideoUrl}
+          onSpeakingEnded={onJudgeSpeakingEnded}
+          onSpeakingError={onJudgeSpeakingError}
+          onArrivalEnded={onJudgeArrivalEnded}
+          onLeavingEnded={onJudgeLeavingEnded}
+        />
+      </div>
 
       <SceneDebugBar scene={scene} send={send} calibrated={IS_CALIBRATED} />
     </div>
@@ -57,8 +92,7 @@ export default function SceneController({
 }
 
 /**
- * Development-only. Lets you jump between beats while judging the blocking, and
- * says loudly when the calibration is still the placeholder. Strip in Phase 9.
+ * Development-only scene debug helper.
  */
 function SceneDebugBar({
   scene,
@@ -76,12 +110,12 @@ function SceneDebugBar({
     ["near", { type: "NEAR_SETTLED" }],
     ["talk done", { type: "DIALOGUE_COMPLETE" }],
     ["exit done", { type: "EXIT_COMPLETE" }],
-    ["judges", { type: "JUDGES_SEATED" }],
+    ["judges seated", { type: "JUDGES_SEATED" }],
   ];
   return (
     <div className="absolute bottom-3 left-3 z-[10000] flex flex-wrap items-center gap-2 rounded bg-black/70 px-3 py-2 font-mono text-[11px] text-white/80 backdrop-blur">
       <span className="text-white">{scene}</span>
-      {!calibrated && <span className="text-amber-400">uncalibrated hall — run /calibrate</span>}
+      {!calibrated && <span className="text-amber-400">uncalibrated hall</span>}
       {beats.map(([label, e]) => (
         <button
           key={label}
