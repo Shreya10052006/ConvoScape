@@ -17,6 +17,8 @@ import {
   startSpeechRecognition,
   type SpeechRecognitionHandle,
 } from "@/lib/speech/speechRecognition";
+import { AudioActivityTracker } from "@/lib/speech/audioActivityTracker";
+import { analyzeSingleAnswer } from "@/lib/speech/speechAnalysis";
 import { speak, stopSpeaking, type CharacterVoice } from "@/lib/speech/speechSynthesis";
 import {
   PRESENTATION_SECONDS,
@@ -40,6 +42,7 @@ interface Props {
   project: ProjectContext;
   stageHistory: TranscriptTurn[];
   priorPhaseSummary?: string;
+  mediaStream?: MediaStream | null;
   onTurn: (turn: TranscriptTurn) => void;
   onTopic: (topic: string) => void;
   onStageComplete: () => void;
@@ -115,6 +118,7 @@ export default function ConversationController({
   project,
   stageHistory,
   priorPhaseSummary,
+  mediaStream,
   onTurn,
   onTopic,
   onStageComplete,
@@ -148,6 +152,7 @@ export default function ConversationController({
   });
 
   const recognitionRef = useRef<SpeechRecognitionHandle | null>(null);
+  const audioActivityTrackerRef = useRef<AudioActivityTracker>(new AudioActivityTracker());
   const idleTimerRef = useRef<number | null>(null);
   const beginListeningRef = useRef<() => void>(() => {});
 
@@ -479,14 +484,20 @@ export default function ConversationController({
       setPresentationEndsAt(null);
       setUserInterimSpeech("");
 
+      const pauseTiming = audioActivityTrackerRef.current.stop(startTime, endTime);
+      const detailedAnswer = analyzeSingleAnswer(text, pauseTiming, project);
+
       onTurn({
         id: newTurnId(),
         speaker: "user",
         text,
+        rawTranscript: text,
+        normalizedTranscript: detailedAnswer.normalizedTranscript,
+        detailedAnswer,
         stage,
         kind: "CHARACTER_DIALOGUE",
-        startTime,
-        endTime,
+        startTime: startTime ?? pauseTiming.speechStartTime ?? undefined,
+        endTime: endTime ?? pauseTiming.speechEndTime ?? undefined,
       });
       setCaption("");
       setCaptionSpeaker(null);
@@ -520,7 +531,7 @@ export default function ConversationController({
         void executeStep(nextStep);
       }
     },
-    [clearIdleTimer, onTurn, stage, triggerPrefetch, executeStep]
+    [clearIdleTimer, onTurn, stage, triggerPrefetch, executeStep, project]
   );
 
   const beginListening = useCallback(() => {
@@ -534,6 +545,9 @@ export default function ConversationController({
     } else {
       setStatus("listening");
     }
+
+    // Start lightweight browser-side Web Audio VAD for accurate pause timing
+    audioActivityTrackerRef.current.start(mediaStream);
 
     if (!speechSupported || micUnavailable) {
       setStatus(stage === "presentation" ? "presenting" : "typing");
@@ -566,7 +580,7 @@ export default function ConversationController({
     idleTimerRef.current = window.setTimeout(() => {
       showSystem("Take your time. You can respond when you're ready.", 6000);
     }, IDLE_NUDGE_MS);
-  }, [stage, speechSupported, micUnavailable, showSystem, submitAnswer, clearIdleTimer, interruptions]);
+  }, [stage, speechSupported, micUnavailable, showSystem, submitAnswer, clearIdleTimer, interruptions, mediaStream]);
 
   beginListeningRef.current = beginListening;
 
@@ -584,6 +598,7 @@ export default function ConversationController({
     stopSpeaking();
     recognitionRef.current?.stop();
     recognitionRef.current = null;
+    audioActivityTrackerRef.current.stop();
     clearIdleTimer();
     setCaption("");
     setCaptionSpeaker(null);
@@ -595,6 +610,7 @@ export default function ConversationController({
     return () => {
       stopSpeaking();
       recognitionRef.current?.stop();
+      audioActivityTrackerRef.current.stop();
       clearIdleTimer();
     };
   }, [clearIdleTimer]);

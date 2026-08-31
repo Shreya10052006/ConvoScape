@@ -7,7 +7,7 @@ import { promisify } from "util";
 const execFileAsync = promisify(execFile);
 
 export async function POST(req: NextRequest) {
-  let body: { responseId?: string; text?: string; warmup?: boolean };
+  let body: { responseId?: string; text?: string; character?: "rahul" | "judge1" | "judge2" | "female_judge" | "male_judge"; warmup?: boolean };
   try {
     body = await req.json();
   } catch {
@@ -18,13 +18,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ warmed: true });
   }
 
-  const { responseId, text } = body;
+  const { responseId, text, character = "rahul" } = body;
   if (!responseId || !text) {
     return NextResponse.json({ error: "Missing required fields: responseId, text." }, { status: 400 });
   }
 
   const cleanId = responseId.replace(/[^a-zA-Z0-9_-]/g, "");
-  const videoFileName = `rahul-response-${cleanId}.mp4`;
+  const prefix =
+    character === "judge1" || character === "female_judge"
+      ? "judge-female-"
+      : character === "judge2" || character === "male_judge"
+      ? "judge-male-"
+      : "rahul-response-";
+
+  const videoFileName = `${prefix}${cleanId}.mp4`;
   const publicVideoPath = path.join(process.cwd(), "public", "generated", videoFileName);
   const videoUrl = `/generated/${videoFileName}`;
 
@@ -39,7 +46,7 @@ export async function POST(req: NextRequest) {
     const daemonRes = await fetch("http://127.0.0.1:5001", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ responseId: cleanId, text }),
+      body: JSON.stringify({ responseId: cleanId, text, character }),
     }).catch(() => null);
 
     if (daemonRes && daemonRes.ok) {
@@ -50,7 +57,7 @@ export async function POST(req: NextRequest) {
 
     // Subprocess fallback
     const cwd = process.cwd();
-    await execFileAsync("python", ["backend/generate_response_video.py", cleanId, text], { cwd, timeout: 120000 });
+    await execFileAsync("python", ["backend/generate_response_video.py", cleanId, text, character], { cwd, timeout: 120000 });
 
     if (fs.existsSync(publicVideoPath)) {
       return NextResponse.json({ videoUrl, cached: false });
@@ -58,11 +65,11 @@ export async function POST(req: NextRequest) {
       throw new Error("Generated video file not found after command execution.");
     }
   } catch (err) {
-    console.error("[generate-video API] Wav2Lip generation failed:", err);
-    // Graceful fallback response
+    console.warn("[generate-video API] Subprocess execution unavailable in serverless environment (using audio fallback):", (err as Error).message);
     return NextResponse.json({
-      error: "Wav2Lip generation failed",
-      fallbackAudioUrl: `/generated/tts-${cleanId}.wav`,
-    }, { status: 500 });
+      videoUrl: null,
+      fallback: true,
+      message: "Serverless fallback active: speech synthesized via client audio",
+    }, { status: 200 });
   }
 }
