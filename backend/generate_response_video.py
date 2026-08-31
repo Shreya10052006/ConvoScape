@@ -70,20 +70,54 @@ except Exception:
 MODEL = None
 if not USE_ONNX:
     checkpoint_path = os.path.abspath('backend/models/wav2lip_gan.pth')
-    MODEL = Wav2Lip()
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    s_dict = checkpoint.get('state_dict', {})
-    new_s = {k.replace('module.', ''): v for k, v in s_dict.items()}
-    MODEL.load_state_dict(new_s, strict=False)
-    MODEL.eval()
+    if os.path.exists(checkpoint_path):
+        MODEL = Wav2Lip()
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        s_dict = checkpoint.get('state_dict', {})
+        new_s = {k.replace('module.', ''): v for k, v in s_dict.items()}
+        MODEL.load_state_dict(new_s, strict=False)
+        MODEL.eval()
 
-def generate_tts_audio(text, audio_path):
-    os.makedirs(os.path.dirname(audio_path), exist_ok=True)
-    temp_mp3 = audio_path.replace(".wav", ".mp3")
+# Character Configurations: Voice and Video coordinates
+CHARACTER_CONFIGS = {
+    "rahul": {
+        "voice": "en-US-GuyNeural",
+        "source_video": "public/assets/listening.mp4",
+        "out_prefix": "rahul-response-",
+        "crop": (54, 159, 719, 799),  # y1, y2, x1, x2 in 1920x1080
+    },
+    "judge1": {
+        "voice": "en-GB-SoniaNeural",
+        "source_video": "public/assets/judge_listening.mp4",
+        "out_prefix": "judge-female-",
+        "crop": (187, 387, 869, 1069),  # Left Judge (Female) in 2560x1440 judge_listening.mp4
+    },
+    "female_judge": {
+        "voice": "en-GB-SoniaNeural",
+        "source_video": "public/assets/judge_listening.mp4",
+        "out_prefix": "judge-female-",
+        "crop": (187, 387, 869, 1069),
+    },
+    "judge2": {
+        "voice": "en-US-ChristopherNeural",
+        "source_video": "public/assets/judge_listening.mp4",
+        "out_prefix": "judge-male-",
+        "crop": (133, 333, 1393, 1593),  # Right Judge (Male) in 2560x1440 judge_listening.mp4
+    },
+    "male_judge": {
+        "voice": "en-US-ChristopherNeural",
+        "source_video": "public/assets/judge_listening.mp4",
+        "out_prefix": "judge-male-",
+        "crop": (133, 333, 1393, 1593),
+    },
+}
+
+def generate_tts_audio(text: str, audio_path: str, voice: str = "en-US-GuyNeural"):
     try:
         import asyncio
         import edge_tts
-        communicate = edge_tts.Communicate(text, "en-US-GuyNeural")
+        temp_mp3 = audio_path.replace('.wav', '.mp3')
+        communicate = edge_tts.Communicate(text, voice)
         asyncio.run(communicate.save(temp_mp3))
         ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
         subprocess.run(
@@ -111,39 +145,100 @@ def generate_tts_audio(text, audio_path):
         finally:
             pythoncom.CoUninitialize()
 
-def generate_rahul_video(response_id: str, text: str) -> str:
-    out_video = os.path.abspath(f'public/generated/rahul-response-{response_id}.mp4')
+def compute_frame_crops(full_frames, character: str, cfg: dict):
+    if len(full_frames) <= 1 or character.lower() == "rahul":
+        y1, y2, x1, x2 = cfg["crop"]
+        return [(y1, y2, x1, x2)] * len(full_frames)
+
+    char_key = character.lower()
+    if char_key in ["judge1", "female_judge"]:
+        init_mx, init_my = 969, 323
+        search_x1, search_x2, search_y1, search_y2 = 900, 1040, 270, 370
+        tmpl_hw, tmpl_hh = 35, 25
+        fh, fw = 200, 200
+        offset_y = 136
+    elif char_key in ["judge2", "male_judge"]:
+        init_mx, init_my = 1493, 269
+        search_x1, search_x2, search_y1, search_y2 = 1420, 1560, 220, 320
+        tmpl_hw, tmpl_hh = 35, 25
+        fh, fw = 200, 200
+        offset_y = 136
+    else:
+        y1, y2, x1, x2 = cfg["crop"]
+        return [(y1, y2, x1, x2)] * len(full_frames)
+
+    frame0 = full_frames[0]
+    tmpl = frame0[init_my - tmpl_hh : init_my + tmpl_hh, init_mx - tmpl_hw : init_mx + tmpl_hw]
+
+    crops = []
+    prev_mx, prev_my = init_mx, init_my
+    for f in full_frames:
+        roi = f[search_y1:search_y2, search_x1:search_x2]
+        res = cv2.matchTemplate(roi, tmpl, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        if max_val > 0.4:
+            cur_mx = search_x1 + max_loc[0] + tmpl_hw
+            cur_my = search_y1 + max_loc[1] + tmpl_hh
+            prev_mx, prev_my = cur_mx, cur_my
+        else:
+            cur_mx, cur_my = prev_mx, prev_my
+
+        y1 = max(0, cur_my - offset_y)
+        y2 = y1 + fh
+        x1 = max(0, cur_mx - fw // 2)
+        x2 = x1 + fw
+        crops.append((y1, y2, x1, x2))
+
+    return crops
+
+def generate_character_video(response_id: str, text: str, character: str = "rahul") -> str:
+    cfg = CHARACTER_CONFIGS.get(character.lower(), CHARACTER_CONFIGS["rahul"])
+    prefix = cfg["out_prefix"]
+    out_video = os.path.abspath(f'public/generated/{prefix}{response_id}.mp4')
     if os.path.exists(out_video):
         return out_video
 
     t0 = time.perf_counter()
-    audio_path = os.path.abspath(f'public/generated/tts-{response_id}.wav')
+    audio_path = os.path.abspath(f'public/generated/tts-{character}-{response_id}.wav')
     os.makedirs('public/generated', exist_ok=True)
 
-    # 1. TTS Generation
-    generate_tts_audio(text, audio_path)
+    # 1. TTS Generation with character voice
+    generate_tts_audio(text, audio_path, cfg["voice"])
 
     # 2. Audio Processing
     wav = audio.load_wav(audio_path, 16000)
     mel = audio.melspectrogram(wav)
 
-    # 3. Source Video & Coordinates
-    source_video = os.path.abspath('public/assets/listening.mp4')
-    cap = cv2.VideoCapture(source_video)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
+    # 3. Source Video / Image & Coordinates
+    source_file = os.path.abspath(cfg["source_video"])
     full_frames = []
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        full_frames.append(frame)
-    cap.release()
 
-    y1, y2, x1, x2 = 54, 159, 719, 799
-    fw, fh = x2 - x1, y2 - y1
+    if source_file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+        img = cv2.imread(source_file)
+        if img is not None:
+            full_frames = [img]
+            frame_h, frame_w = img.shape[:2]
+            fps = 25.0
+    
+    if not full_frames:
+        cap = cv2.VideoCapture(source_file)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            full_frames.append(frame)
+        cap.release()
+
+    if not full_frames:
+        raise ValueError(f"Could not read frames from source: {source_file}")
+
+    # Per-frame mouth tracking to lock lip-sync onto natural head movements
+    frame_crops = compute_frame_crops(full_frames, character, cfg)
+    y1_0, y2_0, x1_0, x2_0 = frame_crops[0]
+    fw, fh = x2_0 - x1_0, y2_0 - y1_0
 
     mask_single = np.zeros((fh, fw, 3), dtype=np.float32)
     cv2.ellipse(mask_single, (fw // 2, int(fh * 0.65)), 
@@ -151,7 +246,10 @@ def generate_rahul_video(response_id: str, text: str) -> str:
     mask_single = cv2.GaussianBlur(mask_single, (11, 11), 0)
     inv_mask = (1.0 - mask_single).astype(np.float32)
 
-    pre_face_crops = [cv2.resize(f[y1:y2, x1:x2], (96, 96)) for f in full_frames]
+    pre_face_crops = [
+        cv2.resize(full_frames[t % len(full_frames)][frame_crops[t % len(frame_crops)][0]:frame_crops[t % len(frame_crops)][1], frame_crops[t % len(frame_crops)][2]:frame_crops[t % len(frame_crops)][3]], (96, 96))
+        for t in range(len(full_frames))
+    ]
 
     # 4. Mel Chunks
     mel_step_size = 16
@@ -200,12 +298,14 @@ def generate_rahul_video(response_id: str, text: str) -> str:
             ort_inputs = {'audio_mel': np_mel, 'face_img': np_img}
             ort_out = ORT_SESSION.run(None, ort_inputs)
             pred_np = np.transpose(ort_out[0], (0, 2, 3, 1)) * 255.0
-        else:
+        elif MODEL is not None:
             t_img = torch.FloatTensor(np_img)
             t_mel = torch.FloatTensor(np_mel)
             with torch.inference_mode():
                 pred = MODEL(t_mel, t_img)
             pred_np = pred.numpy().transpose(0, 2, 3, 1) * 255.0
+        else:
+            raise RuntimeError("No inference engine available")
 
         for p in pred_np:
             p_uint8 = np.clip(p, 0, 255).astype(np.uint8)
@@ -249,20 +349,26 @@ def generate_rahul_video(response_id: str, text: str) -> str:
         for i, full_idx in enumerate(range(c_start, c_end)):
             src_frame = full_frames[full_idx % len(full_frames)]
             np.copyto(chunk_buf[i], src_frame)
-            orig_face = src_frame[y1:y2, x1:x2].astype(np.float32)
+            cy1, cy2, cx1, cx2 = frame_crops[full_idx % len(frame_crops)]
+            orig_face = src_frame[cy1:cy2, cx1:cx2].astype(np.float32)
             p_face = preds_25fps[full_idx]
-            chunk_buf[i, y1:y2, x1:x2] = (p_face * mask_single + orig_face * inv_mask).astype(np.uint8)
+            chunk_buf[i, cy1:cy2, cx1:cx2] = (p_face * mask_single + orig_face * inv_mask).astype(np.uint8)
         proc.stdin.write(chunk_buf.tobytes())
 
     proc.stdin.close()
     proc.wait()
 
     elapsed = time.perf_counter() - t0
-    print(f"[Generate] Completed in {elapsed:.2f}s (Engine: {PROVIDER_NAME}) -> {out_video}")
+    print(f"[Generate] Completed in {elapsed:.2f}s ({character}, Engine: {PROVIDER_NAME}) -> {out_video}")
     return out_video
 
+def generate_rahul_video(response_id: str, text: str) -> str:
+    return generate_character_video(response_id, text, "rahul")
+
 if __name__ == '__main__':
-    if len(sys.argv) > 2:
-        generate_rahul_video(sys.argv[1], sys.argv[2])
+    if len(sys.argv) > 3:
+        generate_character_video(sys.argv[1], sys.argv[2], sys.argv[3])
+    elif len(sys.argv) > 2:
+        generate_character_video(sys.argv[1], sys.argv[2], "rahul")
     else:
-        print("Usage: python generate_response_video.py <response_id> <text>")
+        print("Usage: python generate_response_video.py <response_id> <text> [character]")
