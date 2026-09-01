@@ -130,3 +130,136 @@ export async function requestTailoredTurn(input: RequestTailoredTurnInput): Prom
     topicCovered: result.topicCovered,
   };
 }
+
+export interface RequestJudgeTailoredTurnInput {
+  questionNumber: 2 | 4 | 6 | 8;
+  project: ProjectContext;
+  answersMap?: Record<number, string>; // Q1..Q8 user raw/cleaned answers
+}
+
+export interface JudgeTailoredTurnResult {
+  speaker: "judge2";
+  question: string;
+  reasoningTarget: string;
+  sourceContext: string[];
+}
+
+/**
+ * Strict Context Builder for Judge Q2 (Questionnaire ONLY)
+ */
+export function buildJudgeQ2Context(project: ProjectContext): string {
+  return [
+    "QUESTIONNAIRE DATA (ONLY CONTEXT PERMITTED FOR Q2):",
+    `Team/Project Name: ${project.name}`,
+    `Domain: ${project.domain}`,
+    `Project Explanation: ${project.description || project.topic}`,
+    `Why Built: ${project.problem || "Not specified"}`,
+    `Tech Stack: ${project.stack || "Not specified"}`,
+    "\nTASK: Generate Male Technical Judge's Q2 question to probe the student's technical approach or architecture based solely on this questionnaire data. Return JSON.",
+  ].join("\n");
+}
+
+/**
+ * Strict Context Builder for Judge Q4 (Questionnaire + Q1 + Q2)
+ */
+export function buildJudgeQ4Context(project: ProjectContext, answersMap: Record<number, string> = {}): string {
+  const sections: string[] = [
+    "QUESTIONNAIRE DATA:",
+    `Team/Project Name: ${project.name}`,
+    `Domain: ${project.domain}`,
+    `Project Explanation: ${project.description || project.topic}`,
+    `Why Built: ${project.problem || "Not specified"}`,
+    `Tech Stack: ${project.stack || "Not specified"}`,
+    "\nPERMITTED CONVERSATION ANSWERS (Q1 and Q2 ONLY - Q3 is deliberately excluded):",
+    `Student Presentation / Answer to Q1: "${answersMap[1] || "(No Q1 answer recorded)"}"`,
+    `Student Answer to Q2: "${answersMap[2] || "(No Q2 answer recorded)"}"`,
+    "\nTASK: Generate Male Technical Judge's Q4 question to probe trade-offs, limitations, or deeper technical mechanics grounded in what they explained in Q1/Q2. Return JSON.",
+  ];
+  return sections.join("\n");
+}
+
+/**
+ * Strict Context Builder for Judge Q6 (Questionnaire + Q1..Q4)
+ */
+export function buildJudgeQ6Context(project: ProjectContext, answersMap: Record<number, string> = {}): string {
+  const sections: string[] = [
+    "QUESTIONNAIRE DATA:",
+    `Team/Project Name: ${project.name}`,
+    `Domain: ${project.domain}`,
+    `Project Explanation: ${project.description || project.topic}`,
+    `Why Built: ${project.problem || "Not specified"}`,
+    `Tech Stack: ${project.stack || "Not specified"}`,
+    "\nPERMITTED CONVERSATION ANSWERS (Q1 through Q4 ONLY - Q5 is deliberately excluded):",
+    `Student Answer to Q1: "${answersMap[1] || ""}"`,
+    `Student Answer to Q2: "${answersMap[2] || ""}"`,
+    `Student Answer to Q3: "${answersMap[3] || ""}"`,
+    `Student Answer to Q4: "${answersMap[4] || ""}"`,
+    "\nTASK: Generate Male Technical Judge's Q6 question to challenge technical feasibility, scalability, failure scenarios, or unexpected edge cases based on Q1-Q4 answers. Return JSON.",
+  ];
+  return sections.join("\n");
+}
+
+/**
+ * Strict Context Builder for Judge Q8 (Questionnaire + Q1..Q6)
+ */
+export function buildJudgeQ8Context(project: ProjectContext, answersMap: Record<number, string> = {}): string {
+  const sections: string[] = [
+    "QUESTIONNAIRE DATA:",
+    `Team/Project Name: ${project.name}`,
+    `Domain: ${project.domain}`,
+    `Project Explanation: ${project.description || project.topic}`,
+    `Why Built: ${project.problem || "Not specified"}`,
+    `Tech Stack: ${project.stack || "Not specified"}`,
+    "\nPERMITTED CONVERSATION ANSWERS (Q1 through Q6 ONLY - Q7 is deliberately excluded):",
+    `Student Answer to Q1: "${answersMap[1] || ""}"`,
+    `Student Answer to Q2: "${answersMap[2] || ""}"`,
+    `Student Answer to Q3: "${answersMap[3] || ""}"`,
+    `Student Answer to Q4: "${answersMap[4] || ""}"`,
+    `Student Answer to Q5: "${answersMap[5] || ""}"`,
+    `Student Answer to Q6: "${answersMap[6] || ""}"`,
+    "\nTASK: Generate Male Technical Judge's final evaluation question (Q8) to test deep understanding, critical trade-offs, or real-world operational viability. Return JSON.",
+  ];
+  return sections.join("\n");
+}
+
+/**
+ * Request a tailored question for Judge (Male Technical Judge: Q2, Q4, Q6, Q8).
+ */
+export async function requestJudgeTailoredTurn(input: RequestJudgeTailoredTurnInput): Promise<JudgeTailoredTurnResult> {
+  const { questionNumber, project, answersMap = {} } = input;
+
+  let prompt = "";
+  if (questionNumber === 2) {
+    prompt = buildJudgeQ2Context(project);
+  } else if (questionNumber === 4) {
+    prompt = buildJudgeQ4Context(project, answersMap);
+  } else if (questionNumber === 6) {
+    prompt = buildJudgeQ6Context(project, answersMap);
+  } else if (questionNumber === 8) {
+    prompt = buildJudgeQ8Context(project, answersMap);
+  }
+
+  const { JUDGE_TAILORED_SYSTEM_INSTRUCTION, JUDGE_TAILORED_TURN_SCHEMA } = await import("./personas");
+  const { judgeTailoredTurnResponseSchema } = await import("./schemas");
+
+  const result = await generateJSON<{ question: string; reasoningTarget?: string; sourceContext?: string[] }>(
+    {
+      systemInstruction: JUDGE_TAILORED_SYSTEM_INSTRUCTION,
+      history: [],
+      userMessage: prompt,
+      responseSchema: JUDGE_TAILORED_TURN_SCHEMA,
+      temperature: 0.8,
+      maxOutputTokens: 300,
+      timeoutMs: 20_000,
+    },
+    zodValidator(judgeTailoredTurnResponseSchema)
+  );
+
+  return {
+    speaker: "judge2",
+    question: result.question,
+    reasoningTarget: result.reasoningTarget || "technical evaluation",
+    sourceContext: result.sourceContext || [],
+  };
+}
+
