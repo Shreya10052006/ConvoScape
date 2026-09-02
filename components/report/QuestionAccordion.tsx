@@ -105,14 +105,54 @@ export default function QuestionAccordion({ feedbackList, transcript, project }:
                   </p>
                 </div>
 
-                {/* User's Stored Answer */}
+                {/* User's Stored Raw Spoken Answer */}
                 <div>
-                  <p className="font-mono text-[11px] uppercase tracking-widest text-neutral-400 mb-1">
-                    Your Answer
-                  </p>
-                  <p className="text-sm text-neutral-300 bg-black/60 p-3 rounded-lg border border-white/5 italic">
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="font-mono text-[11px] uppercase tracking-widest text-neutral-400">
+                      Your Spoken Answer (Raw Capture)
+                    </p>
+                    {userTurn?.detailedAnswer?.durationSeconds && (
+                      <span className="font-mono text-[10px] text-sky-400 bg-sky-950/40 px-2 py-0.5 rounded border border-sky-500/20">
+                        {userTurn.detailedAnswer.durationSeconds.toFixed(1)}s
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-sm text-neutral-200 bg-black/60 p-3.5 rounded-lg border border-white/10 font-normal leading-relaxed">
                     &ldquo;{answerText}&rdquo;
                   </p>
+
+                  {/* Per-Answer Speech Analytics Badges */}
+                  {userTurn?.detailedAnswer && (
+                    <div className="flex flex-wrap items-center gap-2 pt-2 text-[11px] font-mono text-neutral-400">
+                      <span className="rounded bg-white/5 px-2 py-0.5 border border-white/10 text-neutral-300">
+                        {userTurn.detailedAnswer.wordCount} words
+                      </span>
+                      {userTurn.detailedAnswer.fillerCount > 0 && (
+                        <span className="rounded bg-amber-950/30 px-2 py-0.5 border border-amber-500/20 text-amber-300">
+                          {userTurn.detailedAnswer.fillerCount} filler{userTurn.detailedAnswer.fillerCount > 1 ? "s" : ""}
+                          {userTurn.detailedAnswer.fillerWords.length > 0
+                            ? ` (${Array.from(new Set(userTurn.detailedAnswer.fillerWords)).slice(0, 3).join(", ")})`
+                            : ""}
+                        </span>
+                      )}
+                      {(userTurn.detailedAnswer.pauseCount ?? 0) > 0 && (
+                        <span className="rounded bg-sky-950/30 px-2 py-0.5 border border-sky-500/20 text-sky-300">
+                          {userTurn.detailedAnswer.pauseCount} pause{userTurn.detailedAnswer.pauseCount! > 1 ? "s" : ""}
+                          {userTurn.detailedAnswer.longPauseCount ? ` (${userTurn.detailedAnswer.longPauseCount} long)` : ""}
+                        </span>
+                      )}
+                      {userTurn.detailedAnswer.falseStarts && userTurn.detailedAnswer.falseStarts.length > 0 && (
+                        <span className="rounded bg-purple-950/30 px-2 py-0.5 border border-purple-500/20 text-purple-300">
+                          {userTurn.detailedAnswer.falseStarts.length} false start{userTurn.detailedAnswer.falseStarts.length > 1 ? "s" : ""}
+                        </span>
+                      )}
+                      {userTurn.detailedAnswer.repetitionCount > 0 && (
+                        <span className="rounded bg-rose-950/30 px-2 py-0.5 border border-rose-500/20 text-rose-300">
+                          {userTurn.detailedAnswer.repetitionCount} repeat{userTurn.detailedAnswer.repetitionCount > 1 ? "s" : ""}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Tags if present */}

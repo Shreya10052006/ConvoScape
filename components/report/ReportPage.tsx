@@ -7,13 +7,15 @@
  *
  * TABS:
  * - TAB 1: 🎓 Student Communication (Generated immediately from Rahul conversation)
- * - TAB 2: 🧑‍⚖️ Judges Feedback (Future feature - disabled, no fake data)
+ * - TAB 2: 🧑‍⚖️ Judges Feedback (Generated asynchronously in background from Judges conversation)
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  CompactQuestionTurn,
   FinalReport,
   InterruptionMetrics,
+  JudgesEvaluationReport,
   ProjectContext,
   SessionTimestamps,
   SpeechMetrics,
@@ -32,6 +34,13 @@ import {
   TechnicalCommunicationCard,
   UnexpectedPerformanceCard,
 } from "./SectionCards";
+import {
+  JudgesOverviewCard,
+  JudgesQuestionAccordion,
+  JudgesTechnicalDeepDiveCard,
+  JudgesEdgeCaseAndScaleCard,
+  JudgesRecommendationsCard,
+} from "./JudgesSectionCards";
 
 interface Props {
   project: ProjectContext;
@@ -42,6 +51,7 @@ interface Props {
   sessionId?: string;
   timestamps?: SessionTimestamps;
   interruptions?: InterruptionMetrics;
+  judgeTurns?: CompactQuestionTurn[];
   onReportReady: () => void;
   onRestart: () => void;
 }
@@ -58,12 +68,15 @@ export default function ReportPage({
   sessionId,
   timestamps,
   interruptions,
+  judgeTurns = [],
   onReportReady,
   onRestart,
 }: Props) {
   const [activeTab, setActiveTab] = useState<ActiveTab>("student");
   const [status, setStatus] = useState<Status>("loading");
   const [report, setReport] = useState<FinalReport | null>(null);
+  const [judgesReport, setJudgesReport] = useState<JudgesEvaluationReport | null>(null);
+  const [judgesLoading, setJudgesLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const readySignalled = useRef(false);
@@ -79,12 +92,12 @@ export default function ReportPage({
     };
   }, [recordingUrl]);
 
+  // 1. Load / Fetch Student Communication Report Immediately
   useEffect(() => {
     let cancelled = false;
     setStatus("loading");
     setError(null);
 
-    // Client-side cache check by sessionId to guarantee zero duplicate calls on re-mount
     const cachedKey = sessionId ? `convoscape_report_${sessionId}` : null;
     if (cachedKey && typeof window !== "undefined") {
       try {
@@ -92,6 +105,9 @@ export default function ReportPage({
         if (stored) {
           const parsed = JSON.parse(stored);
           setReport(parsed);
+          if (parsed.judgesFeedback) {
+            setJudgesReport(parsed.judgesFeedback);
+          }
           setStatus("ready");
           if (!readySignalled.current) {
             readySignalled.current = true;
@@ -126,13 +142,10 @@ export default function ReportPage({
         setReport(data);
         setStatus("ready");
 
-        // Save to sessionStorage
         if (cachedKey && typeof window !== "undefined") {
           try {
             sessionStorage.setItem(cachedKey, JSON.stringify(data));
-          } catch {
-            // Ignore quota errors
-          }
+          } catch {}
         }
 
         if (!readySignalled.current) {
@@ -152,16 +165,65 @@ export default function ReportPage({
     };
   }, [attempt, project, transcript, speechMetrics, webcam, sessionId, timestamps, interruptions, onReportReady]);
 
+  // 2. Fetch Judges Evaluation Report in Background Asynchronously
+  useEffect(() => {
+    if (!report || judgesReport || judgesLoading) return;
+
+    let cancelled = false;
+    setJudgesLoading(true);
+
+    (async () => {
+      try {
+        const res = await fetch("/api/report/judges", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            project,
+            judgeTurns,
+            sessionId,
+          }),
+        });
+
+        if (res.ok && !cancelled) {
+          const jData: JudgesEvaluationReport = await res.json();
+          setJudgesReport(jData);
+
+          // Merge into cached report
+          const cachedKey = sessionId ? `convoscape_report_${sessionId}` : null;
+          if (cachedKey && typeof window !== "undefined") {
+            try {
+              const updatedReport = { ...report, judgesFeedback: jData };
+              setReport(updatedReport);
+              sessionStorage.setItem(cachedKey, JSON.stringify(updatedReport));
+            } catch {}
+          }
+        }
+      } catch (err) {
+        console.warn("[ReportPage] Background judges report generation error:", err);
+      } finally {
+        if (!cancelled) setJudgesLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [report, judgesReport, judgesLoading, project, judgeTurns, sessionId]);
+
   const handleDownloadJSON = useCallback(() => {
     if (!report) return;
-    const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+    const exportData = {
+      ...report,
+      judgesFeedback: judgesReport || report.judgesFeedback,
+    };
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `convoscape-student-report-${project.name.toLowerCase().replace(/[^a-z0-9]/g, "-")}.json`;
+    a.download = `convoscape-report-${project.name.toLowerCase().replace(/[^a-z0-9]/g, "-")}.json`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [report, project.name]);
+  }, [report, judgesReport, project.name]);
 
   // Loading State
   if (status === "loading") {
@@ -174,13 +236,13 @@ export default function ReportPage({
           </div>
         </div>
         <p className="font-mono text-xs uppercase tracking-widest text-sky-400 mb-2">
-          Your Rahul conversation is complete
+          Your conversation session is complete
         </p>
         <h2 className="text-xl md:text-2xl font-bold text-white max-w-md">
           Preparing your personalized communication report...
         </h2>
         <p className="mt-2 text-sm text-neutral-400 max-w-sm">
-          Rahul is evaluating technical clarity, directness, and spontaneous thinking across all 10 turns.
+          Analyzing technical clarity, spontaneous thinking, and conversational delivery.
         </p>
       </main>
     );
@@ -199,13 +261,13 @@ export default function ReportPage({
               onClick={() => setAttempt((a) => a + 1)}
               className="rounded-full bg-sky-500 px-5 py-2 text-sm font-semibold text-white hover:bg-sky-400 transition-colors"
             >
-              Try Again
+              Retry
             </button>
             <button
               onClick={onRestart}
-              className="rounded-full border border-white/20 px-5 py-2 text-sm font-medium text-neutral-300 hover:bg-white/10 transition-colors"
+              className="rounded-full border border-white/20 px-5 py-2 text-sm text-neutral-300 hover:bg-white/10 transition-colors"
             >
-              Start New Session
+              Start Over
             </button>
           </div>
         </div>
@@ -216,22 +278,23 @@ export default function ReportPage({
   const student = report.studentCommunication;
 
   return (
-    <main className="min-h-screen bg-neutral-950 text-neutral-100 pb-24 pt-8 px-4 sm:px-6 lg:px-8">
+    <main className="min-h-screen bg-black text-white px-4 py-8 md:px-8 lg:px-12">
       <div className="mx-auto max-w-5xl space-y-8">
-        {/* Top Header */}
-        <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-6">
+        {/* Header Banner */}
+        <header className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-b border-white/10 pb-6">
           <div>
-            <div className="flex items-center gap-2 font-mono text-xs text-neutral-400">
-              <span className="text-sky-400 font-semibold">ConvoScape</span>
-              <span>•</span>
-              <span>{project.domain}</span>
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="font-mono text-[11px] uppercase tracking-widest text-sky-400">
+                ConvoScape Session Analysis
+              </span>
+              <span className="h-1 w-1 rounded-full bg-neutral-600" />
+              <span className="text-[11px] text-neutral-400 font-mono">
+                {new Date(report.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </span>
             </div>
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight mt-1">
-              {project.name}
+            <h1 className="text-2xl md:text-3xl font-black tracking-tight text-white">
+              {project.name} <span className="text-neutral-500 font-normal text-lg sm:text-xl">({project.domain})</span>
             </h1>
-            <p className="text-xs text-neutral-400 mt-0.5">
-              Presented by {project.userName || "Student"} {project.college ? `(${project.college})` : ""}
-            </p>
           </div>
 
           <div className="flex items-center gap-3">
@@ -266,18 +329,28 @@ export default function ReportPage({
             <span>🎓</span> Student Communication
           </button>
 
-          <div className="relative group">
-            <button
-              type="button"
-              disabled
-              className="flex items-center gap-2 px-4 py-2 rounded-lg font-mono text-xs font-semibold text-neutral-500 bg-neutral-900/40 border border-neutral-800 cursor-not-allowed opacity-60"
-            >
-              <span>🧑‍⚖️</span> Judges Feedback
-              <span className="rounded-full bg-neutral-800 px-2 py-0.5 text-[9px] uppercase tracking-wider text-neutral-400">
-                Coming Soon
+          <button
+            type="button"
+            onClick={() => setActiveTab("judges")}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-mono text-xs font-semibold transition-all ${
+              activeTab === "judges"
+                ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 shadow-sm"
+                : "text-neutral-400 hover:text-neutral-200"
+            }`}
+          >
+            <span>🧑‍⚖️</span> Judges Feedback
+            {judgesLoading && (
+              <span className="flex h-2 w-2 relative">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500" />
               </span>
-            </button>
-          </div>
+            )}
+            {judgesReport && (
+              <span className="rounded-full bg-indigo-500/30 text-indigo-300 px-1.5 py-0.2 text-[9px] font-mono border border-indigo-500/40">
+                Ready
+              </span>
+            )}
+          </button>
         </div>
 
         {/* Fallback Notice if Degraded */}
@@ -375,6 +448,60 @@ export default function ReportPage({
                 speech={student.speechAnalysis}
               />
             </section>
+          </div>
+        )}
+
+        {/* TAB 2: JUDGES FEEDBACK CONTENT */}
+        {activeTab === "judges" && (
+          <div className="space-y-8">
+            {!judgesReport && (
+              <div className="rounded-2xl border border-indigo-500/20 bg-indigo-500/[0.03] p-12 text-center space-y-4">
+                <div className="relative mx-auto flex h-14 w-14 items-center justify-center">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-indigo-400 opacity-25" />
+                  <div className="relative inline-flex h-12 w-12 items-center justify-center rounded-full bg-indigo-500/20 border border-indigo-500/30 text-indigo-400 font-mono text-xl">
+                    🧑‍⚖️
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <h3 className="text-lg font-bold text-white">Generating Judges Panel Assessment...</h3>
+                  <p className="text-xs text-indigo-300/80 font-mono">
+                    Evaluating technical architecture, presentation pitch, and Q1–Q8 defense.
+                  </p>
+                </div>
+                <p className="text-xs text-neutral-400 max-w-md mx-auto leading-relaxed">
+                  The panel report will appear right here as soon as synthesis completes. Thank you for your patience.
+                </p>
+              </div>
+            )}
+
+            {judgesReport && (
+              <>
+                {/* 1. Panel Overview Card */}
+                <section aria-label="Judges Overview">
+                  <JudgesOverviewCard judgesReport={judgesReport} />
+                </section>
+
+                {/* 2. Technical Strengths & Vulnerabilities */}
+                <section aria-label="Technical Strengths and Gaps">
+                  <JudgesTechnicalDeepDiveCard judgesReport={judgesReport} />
+                </section>
+
+                {/* 3. Question-by-Question Defense Breakdown */}
+                <section aria-label="Judges Question Breakdown">
+                  <JudgesQuestionAccordion questions={judgesReport.questionAnalysis} />
+                </section>
+
+                {/* 4. Edge-Case Resilience and Scalability Review */}
+                <section aria-label="Edge-Case and Scalability">
+                  <JudgesEdgeCaseAndScaleCard judgesReport={judgesReport} />
+                </section>
+
+                {/* 5. Priority Roadmap Recommendations */}
+                <section aria-label="Judges Recommendations">
+                  <JudgesRecommendationsCard judgesReport={judgesReport} />
+                </section>
+              </>
+            )}
           </div>
         )}
 

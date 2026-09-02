@@ -447,19 +447,30 @@ export function CameraAndSpeechSection({
 
         {speech?.wordsPerMinute != null ? (
           <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="bg-black/40 p-3 rounded-lg border border-white/5">
-                <span className="text-[11px] text-neutral-400">Speaking Pace</span>
-                <p className="font-mono text-base font-bold text-sky-400">
+            <div className="grid grid-cols-3 gap-2">
+              <div className="bg-black/40 p-2.5 rounded-lg border border-white/5 text-center">
+                <span className="text-[10px] text-neutral-400 block leading-tight">Speaking Pace</span>
+                <p className="font-mono text-sm sm:text-base font-bold text-sky-400 mt-1">
                   {speech.wordsPerMinute ? `${speech.wordsPerMinute.toFixed(0)} wpm` : "N/A"}
                 </p>
               </div>
-              <div className="bg-black/40 p-3 rounded-lg border border-white/5">
-                <span className="text-[11px] text-neutral-400">Filler Words</span>
-                <p className="font-mono text-base font-bold text-amber-400">{speech.totalFillerWords || 0}</p>
+              <div className="bg-black/40 p-2.5 rounded-lg border border-white/5 text-center">
+                <span className="text-[10px] text-neutral-400 block leading-tight">Filler Words</span>
+                <p className="font-mono text-sm sm:text-base font-bold text-amber-400 mt-1">
+                  {speech.totalFillerWords || 0}
+                </p>
+              </div>
+              <div className="bg-black/40 p-2.5 rounded-lg border border-white/5 text-center">
+                <span className="text-[10px] text-neutral-400 block leading-tight">Pauses (&ge;0.5s)</span>
+                <p className="font-mono text-sm sm:text-base font-bold text-teal-400 mt-1">
+                  {speech.totalPauseCount || 0}
+                </p>
               </div>
             </div>
-            {speech.summary && <p className="text-xs text-neutral-300 leading-relaxed">{speech.summary}</p>}
+            {speech.summary && <p className="text-xs text-neutral-300 leading-relaxed bg-black/20 p-2.5 rounded-lg border border-white/5">{speech.summary}</p>}
+            <p className="text-[10px] text-neutral-500 leading-tight">
+              * Measured from continuous voice stream and audio activity timings. Natural conversational pauses and fillers are normal and evaluated in context.
+            </p>
           </div>
         ) : (
           <div className="bg-black/40 p-4 rounded-lg border border-white/5 text-xs text-neutral-400 space-y-1">
