@@ -57,8 +57,15 @@ export const tailoredTurnResponseSchema = z.object({
   topicCovered: z.string().default("project question"),
 });
 
+export const judgeTailoredTurnResponseSchema = z.object({
+  question: z.string().min(1, "model returned an empty question"),
+  reasoningTarget: z.string().default("technical evaluation"),
+  sourceContext: z.array(z.string()).default([]),
+});
+
 export type ValidatedTurn = z.infer<typeof turnResponseSchema>;
 export type ValidatedTailoredTurn = z.infer<typeof tailoredTurnResponseSchema>;
+export type ValidatedJudgeTailoredTurn = z.infer<typeof judgeTailoredTurnResponseSchema>;
 
 /** 0-100 score, tolerant of strings and floats, clamped. */
 const score100 = z.coerce
@@ -193,6 +200,9 @@ export const studentCommunicationReportSchema = z.object({
       wordsPerMinute: z.number().nullable().optional(),
       avgResponseDelaySec: z.number().optional(),
       totalFillerWords: z.number().optional(),
+      totalPauseCount: z.number().optional(),
+      longPauseCount: z.number().optional(),
+      avgPauseDurationSec: z.number().optional(),
       summary: z.string().optional(),
     })
     .nullable()
@@ -203,6 +213,77 @@ export type ValidatedStudentReport = z.infer<typeof studentCommunicationReportSc
 export type ValidatedRahulReport = ValidatedStudentReport;
 export type ValidatedReport = ValidatedStudentReport;
 export const rahulPerformanceReportSchema = studentCommunicationReportSchema;
+
+export const judgeQuestionFeedbackSchema = z.object({
+  questionNumber: z.coerce.number().default(1),
+  score: score100,
+  judgeName: z.string().default("Judge"),
+  questionTopic: z.string().default(""),
+  technicalCritique: z.string().default(""),
+  strengths: z.array(z.string()).default([]),
+  areasToDeepen: z.array(z.string()).default([]),
+  practicalRecommendation: z.string().default(""),
+});
+
+export const judgesEvaluationReportSchema = z.object({
+  reportType: z.literal("judges_evaluation").default("judges_evaluation"),
+  overallHackathonScore: score100,
+  verdictSummary: z.string().default(""),
+  categoryScores: z
+    .object({
+      technicalDepth: score100,
+      architectureAndDesign: score100,
+      problemSolvingAndReasoning: score100,
+      feasibilityAndViability: score100,
+      presentationAndDefense: score100,
+    })
+    .default({
+      technicalDepth: 75,
+      architectureAndDesign: 75,
+      problemSolvingAndReasoning: 75,
+      feasibilityAndViability: 75,
+      presentationAndDefense: 75,
+    }),
+  questionAnalysis: z.array(judgeQuestionFeedbackSchema).default([]),
+  topTechnicalStrengths: z.array(z.string()).default([]),
+  criticalVulnerabilitiesOrGaps: z.array(z.string()).default([]),
+  edgeCaseHandlingAssessment: z
+    .object({
+      score: score100,
+      summary: z.string().default(""),
+      observations: z.array(z.string()).default([]),
+    })
+    .default({
+      score: 75,
+      summary: "",
+      observations: [],
+    }),
+  scalabilityAndArchitectureReview: z
+    .object({
+      score: score100,
+      summary: z.string().default(""),
+      pros: z.array(z.string()).default([]),
+      cons: z.array(z.string()).default([]),
+    })
+    .default({
+      score: 75,
+      summary: "",
+      pros: [],
+      cons: [],
+    }),
+  judgesRecommendations: z
+    .array(
+      z.object({
+        priority: z.coerce.number().default(1),
+        title: z.string().default(""),
+        rationale: z.string().default(""),
+        actionableSteps: z.string().default(""),
+      })
+    )
+    .default([]),
+});
+
+export type ValidatedJudgesReport = z.infer<typeof judgesEvaluationReportSchema>;
 
 /**
  * Pull a JSON object out of whatever the model actually sent.

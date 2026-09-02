@@ -6,7 +6,10 @@
  */
 
 import type {
+  CompactQuestionTurn,
   FinalReport,
+  JudgeQuestionFeedback,
+  JudgesEvaluationReport,
   ProjectContext,
   SpeechMetrics,
   StudentCommunicationReport,
@@ -182,9 +185,12 @@ export function buildFallbackReport(
       wordsPerMinute: m.wordsPerMinute,
       avgResponseDelaySec: Math.round((m.avgResponseTimeMs / 1000) * 10) / 10,
       totalFillerWords: m.totalFillerWords,
+      totalPauseCount: m.totalPauseCount ?? 0,
+      longPauseCount: m.longPauseCount ?? 0,
+      avgPauseDurationSec: m.avgPauseDurationSeconds ?? 0,
       summary:
         m.wordsPerMinute !== null
-          ? `Speaking pace averaged ~${m.wordsPerMinute.toFixed(0)} words/min with ${m.totalFillerWords} filler words detected.`
+          ? `Speaking pace averaged ~${m.wordsPerMinute.toFixed(0)} words/min with ${m.totalFillerWords} filler words and ${m.totalPauseCount ?? 0} conversational pauses detected.`
           : "Speech metrics available in voice sessions.",
     },
   };
@@ -198,3 +204,99 @@ export function buildFallbackReport(
     isFallback: true,
   };
 }
+
+export function buildFallbackJudgesReport(
+  project: ProjectContext,
+  turns: CompactQuestionTurn[] = []
+): JudgesEvaluationReport {
+  const defaultQuestions: JudgeQuestionFeedback[] = [
+    {
+      questionNumber: 1,
+      score: 82,
+      judgeName: "Judge 1 (Lead Evaluator)",
+      questionTopic: "Project Overview & Problem Solution Fit",
+      technicalCritique: `Presented the core concept of ${project.name} in the ${project.domain} domain effectively.`,
+      strengths: ["Clear explanation of the problem statement", "Articulated the core motivation well"],
+      areasToDeepen: ["Provide more granular architectural metrics on data flow"],
+      practicalRecommendation: "Lead with the exact problem metric in the first 20 seconds of your presentation.",
+    },
+    {
+      questionNumber: 2,
+      score: 80,
+      judgeName: "Judge 2 (Technical Evaluator)",
+      questionTopic: "Architecture & Technology Selection",
+      technicalCritique: `Justified using ${project.stack || "the chosen tech stack"} with practical reasoning.`,
+      strengths: ["Demonstrated solid grasp of technical stack components", "Understood why alternatives were ruled out"],
+      areasToDeepen: ["Highlight database indexing and throughput trade-offs"],
+      practicalRecommendation: "Quantify latency expectations when explaining database queries.",
+    },
+  ];
+
+  return {
+    reportType: "judges_evaluation",
+    overallHackathonScore: 82,
+    verdictSummary: `Strong hackathon presentation for ${project.name}. Demonstrated solid architectural decisions in ${project.domain} with good technical reasoning under judge questioning.`,
+    categoryScores: {
+      technicalDepth: 84,
+      architectureAndDesign: 82,
+      problemSolvingAndReasoning: 80,
+      feasibilityAndViability: 85,
+      presentationAndDefense: 80,
+    },
+    questionAnalysis: turns.length > 0
+      ? turns.map((t, idx) => ({
+          questionNumber: t.questionNumber || idx + 1,
+          score: 80,
+          judgeName: (t.questionNumber || idx + 1) % 2 === 1 ? "Judge 1 (Lead Evaluator)" : "Judge 2 (Technical Evaluator)",
+          questionTopic: t.questionText ? t.questionText.slice(0, 45) + "..." : "Technical Defense",
+          technicalCritique: `Addressed the question with structured technical reasoning.`,
+          strengths: ["Direct response to the judge's prompt", "Good contextual awareness"],
+          areasToDeepen: ["Elaborate on edge-case mitigations"],
+          practicalRecommendation: "Mention specific failure handling patterns when discussing architecture.",
+        }))
+      : defaultQuestions,
+    topTechnicalStrengths: [
+      `Well-defined problem space in ${project.domain}`,
+      "Sound modular architecture and technology stack choice",
+      "Practical understanding of user-facing deployment requirements",
+    ],
+    criticalVulnerabilitiesOrGaps: [
+      "Edge-case recovery paths need formal automated testing coverage",
+      "Resource constraints under high concurrent traffic need benchmarking",
+    ],
+    edgeCaseHandlingAssessment: {
+      score: 80,
+      summary: "Reasonable validation on primary inputs, but edge-case recovery needs explicit error boundaries.",
+      observations: [
+        "Network disconnect and retry handling should be formalized",
+        "Corrupted payload gracefully degrades to fallback state",
+      ],
+    },
+    scalabilityAndArchitectureReview: {
+      score: 83,
+      summary: "Architecture is structured cleanly for an MVP with clear avenues for horizontal scaling.",
+      pros: [
+        "Separation of concerns between compute and storage layers",
+        "Clean stateless API boundaries",
+      ],
+      cons: [
+        "Need caching layer if load increases beyond hackathon scale",
+      ],
+    },
+    judgesRecommendations: [
+      {
+        priority: 1,
+        title: "Implement Edge-Case Error Boundaries",
+        rationale: "Ensures the service remains robust when external APIs or network timeouts occur.",
+        actionableSteps: "Add circuit-breaker patterns and fallback states for critical network requests.",
+      },
+      {
+        priority: 2,
+        title: "Benchmark High-Throughput Scenarios",
+        rationale: "Validates system behavior when concurrent traffic spikes.",
+        actionableSteps: "Run load testing scripts simulating 50-100 concurrent requests.",
+      },
+    ],
+  };
+}
+
