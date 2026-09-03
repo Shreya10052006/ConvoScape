@@ -110,7 +110,7 @@ describe("conversation phase transitions", () => {
 });
 
 describe("scene machine", () => {
-  it("runs the full visual sequence", () => {
+  it("runs the full visual sequence from Rahul to Judges to Report", () => {
     let s = sceneReducer("HALL_IDLE", { type: "SETTLE_COMPLETE" });
     expect(s).toBe("RAHUL_FAR");
     s = sceneReducer(s, { type: "SETTLE_COMPLETE" });
@@ -119,8 +119,19 @@ describe("scene machine", () => {
     expect(s).toBe("RAHUL_NEAR");
     s = sceneReducer(s, { type: "NEAR_SETTLED" });
     expect(s).toBe("RAHUL_CONVERSATION");
+    // Rahul conversation finishes -> transitions to Judge Arrival
+    s = sceneReducer(s, { type: "DIALOGUE_COMPLETE" });
+    expect(s).toBe("JUDGE_ENTRY");
+    // Judges arrive and are seated -> transitions to Judge Conversation
+    s = sceneReducer(s, { type: "JUDGES_SEATED" });
+    expect(s).toBe("JUDGE_CONVERSATION");
+    // Judge conversation finishes -> transitions to Session Complete
     s = sceneReducer(s, { type: "DIALOGUE_COMPLETE" });
     expect(s).toBe("SESSION_COMPLETE");
+    s = sceneReducer(s, { type: "REPORT_READY" });
+    expect(s).toBe("REPORT_GENERATION");
+    s = sceneReducer(s, { type: "REPORT_READY" });
+    expect(s).toBe("REPORT");
   });
 
   it("ignores illegal transitions instead of throwing", () => {

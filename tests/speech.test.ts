@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { analyzeSpeech } from "@/lib/speech/speechAnalysis";
+import {
+  analyzeSpeech,
+  detectFalseStarts,
+  analyzeSingleAnswer,
+} from "@/lib/speech/speechAnalysis";
 import { analyzeRepetition } from "@/lib/speech/repetitionAnalysis";
 import {
   InterruptionTracker,
@@ -45,6 +49,50 @@ describe("filler detection", () => {
     const m = analyzeSpeech([userTurn("I assume the sofa likely helps")], project);
     expect(m.fillerWordCounts["so"] ?? 0).toBe(0);
     expect(m.fillerWordCounts["um"] ?? 0).toBe(0);
+  });
+
+  it("contextual check: does not count 'like' as filler when used as a transitive verb", () => {
+    const m = analyzeSpeech([userTurn("I like React and we like Next.js")], project);
+    expect(m.fillerWordCounts["like"] ?? 0).toBe(0);
+  });
+
+  it("contextual check: counts 'like' when used as a hesitation or discourse filler", () => {
+    const m = analyzeSpeech([userTurn("It was, like, really difficult to integrate")], project);
+    expect(m.fillerWordCounts["like"]).toBe(1);
+  });
+
+  it("contextual check: does not count 'so that' or 'right now' as fillers", () => {
+    const m = analyzeSpeech([userTurn("We built it so that users can access it right now")], project);
+    expect(m.fillerWordCounts["so"] ?? 0).toBe(0);
+    expect(m.fillerWordCounts["right"] ?? 0).toBe(0);
+  });
+});
+
+describe("false start and single answer analysis", () => {
+  it("detects false starts with correction markers and restarts", () => {
+    const text = "Our project is... actually, our project was designed for clinics.";
+    const fs = detectFalseStarts(text);
+    expect(fs.length).toBeGreaterThanOrEqual(1);
+
+    const detailed = analyzeSingleAnswer(text, {
+      speechStartTime: 1000,
+      speechEndTime: 5000,
+      totalDurationSeconds: 4.0,
+      speakingDurationSeconds: 3.2,
+      silenceDurationSeconds: 0.8,
+      pauseCount: 1,
+      longPauseCount: 0,
+      longPauseDurations: [],
+      longestPauseSeconds: 0.8,
+      avgPauseDurationSeconds: 0.8,
+      isAudioVad: true,
+    }, project);
+
+    expect(detailed.rawTranscript).toBe(text);
+    expect(detailed.falseStarts?.length).toBeGreaterThanOrEqual(1);
+    expect(detailed.pauseCount).toBe(1);
+    expect(detailed.speakingDurationSeconds).toBe(3.2);
+    expect(detailed.silenceDurationSeconds).toBe(0.8);
   });
 });
 
