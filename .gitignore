@@ -14,12 +14,6 @@ public/generated/*
 !public/generated/rahul-response-rahul-filler-2.mp4
 !public/generated/rahul-response-rahul-filler-3.mp4
 !public/generated/rahul-response-turn-farewell.mp4
-!public/generated/judge-female-q1.mp4
-!public/generated/judge-female-q3.mp4
-!public/generated/judge-female-q5.mp4
-!public/generated/judge-female-q7.mp4
-!public/generated/judge-female-team-name-clarification.mp4
-!public/generated/judge-female-farewell.mp4
 backend/temp_*.avi
 backend/test_*.wav
 backend/diagnostic_*.wav

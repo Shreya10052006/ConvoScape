@@ -99,16 +99,12 @@ export interface TurnEvaluation {
 }
 
 /**
- * Session phases. Note these are NOT the same as "which character is talking" —
- * the judge Q&A is a single phase in which BOTH judges participate as a panel,
- * choosing who speaks per turn. Modelling it as separate judge1/judge2 phases
- * was what forced the unnatural "Judge 1 finishes, then Judge 2 starts" pattern.
+ * Session phases.
+ * Currently only Rahul peer conversation is active.
+ * Judge phases are preserved for future development.
  */
 export type ConversationStage =
   | "rahul"          // peer conversation, ~5 min
-  | "judgeIntro"     // judges establish college / project / domain
-  | "presentation"   // user presents uninterrupted, 2-3 min
-  | "judgeQA"        // collaborative panel Q&A, ~5-7 min
   | "done";
 
 export interface ConversationState {
@@ -129,14 +125,11 @@ export interface ConversationState {
  */
 export const STAGE_TURN_TARGET: Record<Exclude<ConversationStage, "done">, number> = {
   rahul: 10,
-  judgeIntro: 3,
-  presentation: 1,
-  judgeQA: 6,
 };
 
 /** Order phases advance in. */
 export const STAGE_ORDER: ConversationStage[] = [
-  "rahul", "judgeIntro", "presentation", "judgeQA", "done",
+  "rahul", "done",
 ];
 
 /** Seconds the user gets for the uninterrupted presentation. */

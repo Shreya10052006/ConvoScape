@@ -3,19 +3,14 @@
 /**
  * ReportPage.tsx
  * ---------------------------------------------------------------------------
- * Multi-Tab Post-Conversation Performance Dashboard for ConvoScape.
- *
- * TABS:
- * - TAB 1: 🎓 Student Communication (Generated immediately from Rahul conversation)
- * - TAB 2: 🧑‍⚖️ Judges Feedback (Generated asynchronously in background from Judges conversation)
+ * Post-Conversation Performance Dashboard for ConvoScape.
+ * Shows the Student Communication Report from Rahul's conversation session.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
-  CompactQuestionTurn,
   FinalReport,
   InterruptionMetrics,
-  JudgesEvaluationReport,
   ProjectContext,
   SessionTimestamps,
   SpeechMetrics,
@@ -34,13 +29,6 @@ import {
   TechnicalCommunicationCard,
   UnexpectedPerformanceCard,
 } from "./SectionCards";
-import {
-  JudgesOverviewCard,
-  JudgesQuestionAccordion,
-  JudgesTechnicalDeepDiveCard,
-  JudgesEdgeCaseAndScaleCard,
-  JudgesRecommendationsCard,
-} from "./JudgesSectionCards";
 
 interface Props {
   project: ProjectContext;
@@ -51,13 +39,11 @@ interface Props {
   sessionId?: string;
   timestamps?: SessionTimestamps;
   interruptions?: InterruptionMetrics;
-  judgeTurns?: CompactQuestionTurn[];
   onReportReady: () => void;
   onRestart: () => void;
 }
 
 type Status = "loading" | "ready" | "error";
-type ActiveTab = "student" | "judges";
 
 export default function ReportPage({
   project,
@@ -68,15 +54,11 @@ export default function ReportPage({
   sessionId,
   timestamps,
   interruptions,
-  judgeTurns = [],
   onReportReady,
   onRestart,
 }: Props) {
-  const [activeTab, setActiveTab] = useState<ActiveTab>("student");
   const [status, setStatus] = useState<Status>("loading");
   const [report, setReport] = useState<FinalReport | null>(null);
-  const [judgesReport, setJudgesReport] = useState<JudgesEvaluationReport | null>(null);
-  const [judgesLoading, setJudgesLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const readySignalled = useRef(false);
@@ -92,7 +74,7 @@ export default function ReportPage({
     };
   }, [recordingUrl]);
 
-  // 1. Load / Fetch Student Communication Report Immediately
+  // Load / Fetch Student Communication Report
   useEffect(() => {
     let cancelled = false;
     setStatus("loading");
@@ -105,9 +87,6 @@ export default function ReportPage({
         if (stored) {
           const parsed = JSON.parse(stored);
           setReport(parsed);
-          if (parsed.judgesFeedback) {
-            setJudgesReport(parsed.judgesFeedback);
-          }
           setStatus("ready");
           if (!readySignalled.current) {
             readySignalled.current = true;
@@ -165,65 +144,16 @@ export default function ReportPage({
     };
   }, [attempt, project, transcript, speechMetrics, webcam, sessionId, timestamps, interruptions, onReportReady]);
 
-  // 2. Fetch Judges Evaluation Report in Background Asynchronously
-  useEffect(() => {
-    if (!report || judgesReport || judgesLoading) return;
-
-    let cancelled = false;
-    setJudgesLoading(true);
-
-    (async () => {
-      try {
-        const res = await fetch("/api/report/judges", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            project,
-            judgeTurns,
-            sessionId,
-          }),
-        });
-
-        if (res.ok && !cancelled) {
-          const jData: JudgesEvaluationReport = await res.json();
-          setJudgesReport(jData);
-
-          // Merge into cached report
-          const cachedKey = sessionId ? `convoscape_report_${sessionId}` : null;
-          if (cachedKey && typeof window !== "undefined") {
-            try {
-              const updatedReport = { ...report, judgesFeedback: jData };
-              setReport(updatedReport);
-              sessionStorage.setItem(cachedKey, JSON.stringify(updatedReport));
-            } catch {}
-          }
-        }
-      } catch (err) {
-        console.warn("[ReportPage] Background judges report generation error:", err);
-      } finally {
-        if (!cancelled) setJudgesLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [report, judgesReport, judgesLoading, project, judgeTurns, sessionId]);
-
   const handleDownloadJSON = useCallback(() => {
     if (!report) return;
-    const exportData = {
-      ...report,
-      judgesFeedback: judgesReport || report.judgesFeedback,
-    };
-    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = `convoscape-report-${project.name.toLowerCase().replace(/[^a-z0-9]/g, "-")}.json`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [report, judgesReport, project.name]);
+  }, [report, project.name]);
 
   // Loading State
   if (status === "loading") {
@@ -315,42 +245,9 @@ export default function ReportPage({
           </div>
         </header>
 
-        {/* TWO TABS: Student Communication vs Judges Feedback */}
-        <div className="flex items-center gap-3 border-b border-white/10 pb-3">
-          <button
-            type="button"
-            onClick={() => setActiveTab("student")}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-mono text-xs font-semibold transition-all ${
-              activeTab === "student"
-                ? "bg-sky-500/20 text-sky-300 border border-sky-500/40 shadow-sm"
-                : "text-neutral-400 hover:text-neutral-200"
-            }`}
-          >
-            <span>🎓</span> Student Communication
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab("judges")}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-mono text-xs font-semibold transition-all ${
-              activeTab === "judges"
-                ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 shadow-sm"
-                : "text-neutral-400 hover:text-neutral-200"
-            }`}
-          >
-            <span>🧑‍⚖️</span> Judges Feedback
-            {judgesLoading && (
-              <span className="flex h-2 w-2 relative">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500" />
-              </span>
-            )}
-            {judgesReport && (
-              <span className="rounded-full bg-indigo-500/30 text-indigo-300 px-1.5 py-0.2 text-[9px] font-mono border border-indigo-500/40">
-                Ready
-              </span>
-            )}
-          </button>
+        {/* Section Label */}
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[11px] uppercase tracking-widest text-sky-400">🎓 Student Communication Report</span>
         </div>
 
         {/* Fallback Notice if Degraded */}
@@ -368,142 +265,86 @@ export default function ReportPage({
           </div>
         )}
 
-        {/* TAB 1: STUDENT COMMUNICATION CONTENT */}
-        {activeTab === "student" && (
-          <div className="space-y-8">
-            {/* SECTION 1: Overall Performance & Category Scores */}
-            <section aria-label="Overall Performance">
-              <OverviewScoreCard report={student} />
-            </section>
+        {/* STUDENT COMMUNICATION CONTENT */}
+        <div className="space-y-8">
+          {/* SECTION 1: Overall Performance & Category Scores */}
+          <section aria-label="Overall Performance">
+            <OverviewScoreCard report={student} />
+          </section>
 
-            {/* SECTION 2: Communication Summary */}
-            <section aria-label="Communication Summary">
-              <CommunicationSummaryCard summary={student.overallSummary} />
-            </section>
+          {/* SECTION 2: Communication Summary */}
+          <section aria-label="Communication Summary">
+            <CommunicationSummaryCard summary={student.overallSummary} />
+          </section>
 
-            {/* SECTION 3: Question-by-Question Review (Q1–Q10) */}
-            <section aria-label="Question-by-Question Review" className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
-                    <span>📋</span> Question-by-Question Analysis
-                  </h3>
-                  <p className="text-xs text-neutral-400 mt-0.5">
-                    Detailed review of all 10 questions asked by Rahul. Click any question to expand.
-                  </p>
-                </div>
-                <span className="font-mono text-xs text-neutral-400 bg-white/5 px-3 py-1 rounded-full border border-white/10">
-                  10 Turns Analyzed
-                </span>
-              </div>
-
-              <QuestionAccordion
-                feedbackList={student.questionAnalysis}
-                transcript={transcript}
-                project={project}
-              />
-            </section>
-
-            {/* SECTION 4: Unexpected Question Performance */}
-            <section aria-label="Unexpected Question Performance">
-              <UnexpectedPerformanceCard perf={student.unexpectedQuestionPerformance} />
-            </section>
-
-            {/* SECTION 5: Technical Communication */}
-            <section aria-label="Technical Communication">
-              <TechnicalCommunicationCard tech={student.technicalCommunication} />
-            </section>
-
-            {/* SECTION 6 & 7: Strongest Answers & Key Answers to Refine */}
-            <section aria-label="Highlights">
-              <HighlightsCard
-                strongest={student.strongestAnswers}
-                improvements={student.answersNeedingImprovement}
-                transcript={transcript}
-              />
-            </section>
-
-            {/* SECTION 8 & 9: Strengths & Weaknesses */}
-            <section aria-label="Strengths and Weaknesses">
-              <StrengthsAndWeaknessesCard
-                strengths={student.strengths}
-                weaknesses={student.recurringWeaknesses}
-              />
-            </section>
-
-            {/* SECTION 10: Action Plan */}
-            <section aria-label="Action Plan">
-              <ActionPlanCard plan={student.improvementPlan} />
-            </section>
-
-            {/* SECTION 11: Next Session Goals */}
-            <section aria-label="Next Session Goals">
-              <NextSessionGoalsCard goals={student.nextSessionGoals} />
-            </section>
-
-            {/* SECTION 12: Camera and Speech Presence */}
-            <section aria-label="Camera and Speech Presence">
-              <CameraAndSpeechSection
-                camera={student.cameraAnalysis}
-                speech={student.speechAnalysis}
-              />
-            </section>
-          </div>
-        )}
-
-        {/* TAB 2: JUDGES FEEDBACK CONTENT */}
-        {activeTab === "judges" && (
-          <div className="space-y-8">
-            {!judgesReport && (
-              <div className="rounded-2xl border border-indigo-500/20 bg-indigo-500/[0.03] p-12 text-center space-y-4">
-                <div className="relative mx-auto flex h-14 w-14 items-center justify-center">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-indigo-400 opacity-25" />
-                  <div className="relative inline-flex h-12 w-12 items-center justify-center rounded-full bg-indigo-500/20 border border-indigo-500/30 text-indigo-400 font-mono text-xl">
-                    🧑‍⚖️
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <h3 className="text-lg font-bold text-white">Generating Judges Panel Assessment...</h3>
-                  <p className="text-xs text-indigo-300/80 font-mono">
-                    Evaluating technical architecture, presentation pitch, and Q1–Q8 defense.
-                  </p>
-                </div>
-                <p className="text-xs text-neutral-400 max-w-md mx-auto leading-relaxed">
-                  The panel report will appear right here as soon as synthesis completes. Thank you for your patience.
+          {/* SECTION 3: Question-by-Question Review (Q1–Q10) */}
+          <section aria-label="Question-by-Question Review" className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
+                  <span>📋</span> Question-by-Question Analysis
+                </h3>
+                <p className="text-xs text-neutral-400 mt-0.5">
+                  Detailed review of all 10 questions asked by Rahul. Click any question to expand.
                 </p>
               </div>
-            )}
+              <span className="font-mono text-xs text-neutral-400 bg-white/5 px-3 py-1 rounded-full border border-white/10">
+                10 Turns Analyzed
+              </span>
+            </div>
 
-            {judgesReport && (
-              <>
-                {/* 1. Panel Overview Card */}
-                <section aria-label="Judges Overview">
-                  <JudgesOverviewCard judgesReport={judgesReport} />
-                </section>
+            <QuestionAccordion
+              feedbackList={student.questionAnalysis}
+              transcript={transcript}
+              project={project}
+            />
+          </section>
 
-                {/* 2. Technical Strengths & Vulnerabilities */}
-                <section aria-label="Technical Strengths and Gaps">
-                  <JudgesTechnicalDeepDiveCard judgesReport={judgesReport} />
-                </section>
+          {/* SECTION 4: Unexpected Question Performance */}
+          <section aria-label="Unexpected Question Performance">
+            <UnexpectedPerformanceCard perf={student.unexpectedQuestionPerformance} />
+          </section>
 
-                {/* 3. Question-by-Question Defense Breakdown */}
-                <section aria-label="Judges Question Breakdown">
-                  <JudgesQuestionAccordion questions={judgesReport.questionAnalysis} />
-                </section>
+          {/* SECTION 5: Technical Communication */}
+          <section aria-label="Technical Communication">
+            <TechnicalCommunicationCard tech={student.technicalCommunication} />
+          </section>
 
-                {/* 4. Edge-Case Resilience and Scalability Review */}
-                <section aria-label="Edge-Case and Scalability">
-                  <JudgesEdgeCaseAndScaleCard judgesReport={judgesReport} />
-                </section>
+          {/* SECTION 6 & 7: Strongest Answers & Key Answers to Refine */}
+          <section aria-label="Highlights">
+            <HighlightsCard
+              strongest={student.strongestAnswers}
+              improvements={student.answersNeedingImprovement}
+              transcript={transcript}
+            />
+          </section>
 
-                {/* 5. Priority Roadmap Recommendations */}
-                <section aria-label="Judges Recommendations">
-                  <JudgesRecommendationsCard judgesReport={judgesReport} />
-                </section>
-              </>
-            )}
-          </div>
-        )}
+          {/* SECTION 8 & 9: Strengths & Weaknesses */}
+          <section aria-label="Strengths and Weaknesses">
+            <StrengthsAndWeaknessesCard
+              strengths={student.strengths}
+              weaknesses={student.recurringWeaknesses}
+            />
+          </section>
+
+          {/* SECTION 10: Action Plan */}
+          <section aria-label="Action Plan">
+            <ActionPlanCard plan={student.improvementPlan} />
+          </section>
+
+          {/* SECTION 11: Next Session Goals */}
+          <section aria-label="Next Session Goals">
+            <NextSessionGoalsCard goals={student.nextSessionGoals} />
+          </section>
+
+          {/* SECTION 12: Camera and Speech Presence */}
+          <section aria-label="Camera and Speech Presence">
+            <CameraAndSpeechSection
+              camera={student.cameraAnalysis}
+              speech={student.speechAnalysis}
+            />
+          </section>
+        </div>
 
         {/* Footer */}
         <footer className="pt-8 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-neutral-400">

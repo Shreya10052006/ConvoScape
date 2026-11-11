@@ -24,9 +24,6 @@ export type SceneState =
   | "RAHUL_WALKING"
   | "RAHUL_NEAR"
   | "RAHUL_CONVERSATION"
-  | "RAHUL_EXIT"
-  | "JUDGE_ENTRY"
-  | "JUDGE_CONVERSATION"
   | "SESSION_COMPLETE"
   | "REPORT_GENERATION"
   | "REPORT";
@@ -38,8 +35,6 @@ export type SceneEvent =
   | { type: "WALK_COMPLETE" }
   | { type: "NEAR_SETTLED" }
   | { type: "DIALOGUE_COMPLETE" }
-  | { type: "EXIT_COMPLETE" }
-  | { type: "JUDGES_SEATED" }
   | { type: "REPORT_READY" }
   | { type: "RESTART" };
 
@@ -50,10 +45,7 @@ const TRANSITIONS: Record<SceneState, Partial<Record<SceneEvent["type"], SceneSt
   RAHUL_FAR: { SETTLE_COMPLETE: "RAHUL_WALKING" },
   RAHUL_WALKING: { WALK_COMPLETE: "RAHUL_NEAR" },
   RAHUL_NEAR: { NEAR_SETTLED: "RAHUL_CONVERSATION" },
-  RAHUL_CONVERSATION: { DIALOGUE_COMPLETE: "JUDGE_ENTRY" },
-  RAHUL_EXIT: { EXIT_COMPLETE: "JUDGE_ENTRY" },
-  JUDGE_ENTRY: { JUDGES_SEATED: "JUDGE_CONVERSATION" },
-  JUDGE_CONVERSATION: { DIALOGUE_COMPLETE: "SESSION_COMPLETE" },
+  RAHUL_CONVERSATION: { DIALOGUE_COMPLETE: "SESSION_COMPLETE" },
   SESSION_COMPLETE: { REPORT_READY: "REPORT_GENERATION" },
   REPORT_GENERATION: { REPORT_READY: "REPORT" },
   REPORT: { RESTART: "PROJECT_SETUP" },
@@ -74,12 +66,12 @@ export function sceneReducer(state: SceneState, event: SceneEvent): SceneState {
 
 /** States during which a character is actively moving under rAF control. */
 export function isAnimating(state: SceneState): boolean {
-  return state === "RAHUL_WALKING" || state === "RAHUL_EXIT" || state === "JUDGE_ENTRY";
+  return state === "RAHUL_WALKING";
 }
 
 /** States during which the user may speak. */
 export function isUserTurnPossible(state: SceneState): boolean {
-  return state === "RAHUL_CONVERSATION" || state === "JUDGE_CONVERSATION";
+  return state === "RAHUL_CONVERSATION";
 }
 
 /* -------------------------------------------------------------------------- */

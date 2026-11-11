@@ -6,18 +6,14 @@
  * Orchestrator connecting visual scenes, dialogue machines, camera analysis,
  * speech recognition/synthesis, and the post-session report.
  *
- * FULL FLOW:
+ * CURRENT FLOW (Rahul-only):
  * 1. Rahul walking approach -> Rahul 10-turn peer practice conversation
- * 2. Rahul farewell -> Judge arrival video
- * 3. Hackathon Judges 8-question panel evaluation (Female / Male alternation)
- * 4. Judges farewell -> Judges leaving video -> Instant Student Report
- * 5. Background Judges Evaluation report generation
+ * 2. Rahul farewell -> Session complete -> Student Communication Report
  */
 
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import SceneController from "@/components/scene/SceneController";
 import ConversationController from "@/components/conversation/ConversationController";
-import JudgeConversationController from "@/components/conversation/JudgeConversationController";
 import CameraConsent from "@/components/camera/CameraConsent";
 import CameraAnalysis from "@/components/camera/CameraAnalysis";
 import FullscreenPrompt from "@/components/FullscreenPrompt";
@@ -33,7 +29,6 @@ import type { FaceSample } from "@/lib/vision/faceLandmarks";
 import {
   newSessionId,
   summarisePhase,
-  type CompactQuestionTurn,
   type ConversationStage,
   type InterruptionMetrics,
   type ProjectContext,
@@ -42,7 +37,6 @@ import {
   type WebcamResult,
 } from "@/lib/session/sessionTypes";
 import { InterruptionTracker } from "@/lib/speech/interruptionTracker";
-import type { JudgesVideoState } from "@/components/scene/JudgesVideoController";
 
 interface Props {
   project: ProjectContext;
@@ -87,9 +81,6 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
   const finalWebcamRef = useRef<WebcamResult>({ enabled: false });
   const stageRef = useRef<ConversationStage>(conversation.stage);
   stageRef.current = conversation.stage;
-
-  // Stored judge question turns
-  const judgeTurnsRef = useRef<CompactQuestionTurn[]>([]);
 
   useEffect(() => {
     primeVoices();
@@ -138,11 +129,12 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
     [conversation.transcript, project]
   );
 
-  // Rahul stage completed
+  // Rahul stage completed — go directly to SESSION_COMPLETE and generate report
   const handleStageComplete = useCallback(() => {
     stamp("rahulPhaseEndedAt");
+    stamp("sessionEndedAt");
     dispatchConversation({ type: "ADVANCE_STAGE" });
-    sceneSend({ type: "DIALOGUE_COMPLETE" }); // RAHUL_CONVERSATION -> JUDGE_ENTRY
+    sceneSend({ type: "DIALOGUE_COMPLETE" }); // RAHUL_CONVERSATION -> SESSION_COMPLETE
 
     // Prefetch Student Communication Report in background right after Rahul finishes
     try {
@@ -162,21 +154,10 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
     } catch {}
   }, [stamp, project, conversation.transcript, speechMetrics]);
 
-  // Judges stage completed
-  const handleJudgeStageComplete = useCallback(
-    (turns: CompactQuestionTurn[]) => {
-      stamp("judgeQnaEndedAt");
-      judgeTurnsRef.current = turns;
-      sceneSend({ type: "DIALOGUE_COMPLETE" }); // JUDGE_CONVERSATION -> SESSION_COMPLETE
-    },
-    [stamp]
-  );
-
   // --- Session end: freeze metrics, stop capture ----------------------------
   useEffect(() => {
     if (scene !== "SESSION_COMPLETE") return;
 
-    stamp("sessionEndedAt");
     finalInterruptionsRef.current = interruptionsRef.current.finalize();
     finalWebcamRef.current =
       aggregatorRef.current.sampleCount > 0 ? aggregatorRef.current.finalize() : { enabled: false };
@@ -214,7 +195,7 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
 
   // Camera consent is asked right after setup questions before video scene starts
   const showCameraConsent = !cameraAsked;
-  const showFullscreenPrompt = scene === "RAHUL_EXIT" && !fullscreenAsked;
+  const showFullscreenPrompt = scene === "RAHUL_CONVERSATION" && !fullscreenAsked;
 
   const handleRahulWalkingEnded = useCallback(() => {
     console.log("[Experience] Rahul walking approach video ended.");
@@ -222,19 +203,11 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
     sceneSend({ type: "NEAR_SETTLED" });
   }, []);
 
-  const handleJudgeArrivalEnded = useCallback(() => {
-    console.log("[Experience] Judge arrival video ended. Seating judges.");
-    stamp("judgeQnaStartedAt");
-    sceneSend({ type: "JUDGES_SEATED" }); // JUDGE_ENTRY -> JUDGE_CONVERSATION
-  }, [stamp]);
-
   const activeStage: Exclude<ConversationStage, "done"> =
-    conversation.stage === "done" ? "judgeQA" : conversation.stage;
+    conversation.stage === "done" ? "rahul" : conversation.stage;
 
   const rahulConversationActive =
     scene === "RAHUL_CONVERSATION" && cameraAsked && conversation.stage === "rahul";
-
-  const judgeConversationActive = scene === "JUDGE_CONVERSATION";
 
   const stageHistory = useMemo(
     () => conversation.transcript.filter((t) => t.stage === activeStage),
@@ -249,10 +222,6 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
   // Rahul video states
   const [rahulSpeechState, setRahulSpeechState] = useState<"SPEAKING" | "LISTENING" | "IDLE">("IDLE");
   const [rahulSpeakingVideoUrl, setRahulSpeakingVideoUrl] = useState<string | null>(null);
-
-  // Judge video states
-  const [judgeVideoState, setJudgeVideoState] = useState<JudgesVideoState>("ARRIVAL");
-  const [judgeSpeakingVideoUrl, setJudgeSpeakingVideoUrl] = useState<string | null>(null);
 
   const videoEndCallbackRef = useRef<(() => void) | null>(null);
   const videoErrorCallbackRef = useRef<((err?: unknown) => void) | null>(null);
@@ -278,36 +247,6 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
     }
   }, []);
 
-  const handleJudgeSpeakingEnded = useCallback(() => {
-    setJudgeSpeakingVideoUrl(null);
-    setJudgeVideoState("LISTENING");
-    if (videoEndCallbackRef.current) {
-      const cb = videoEndCallbackRef.current;
-      videoEndCallbackRef.current = null;
-      cb();
-    }
-  }, []);
-
-  const handleJudgeSpeakingError = useCallback((err?: unknown) => {
-    console.warn("[Experience] Judge speaking video error:", err);
-    setJudgeSpeakingVideoUrl(null);
-    setJudgeVideoState("LISTENING");
-    if (videoErrorCallbackRef.current) {
-      const cb = videoErrorCallbackRef.current;
-      videoErrorCallbackRef.current = null;
-      cb(err);
-    }
-  }, []);
-
-  const handleJudgeVisualStateChange = useCallback((vState: JudgesVideoState, videoUrl?: string | null) => {
-    setJudgeVideoState(vState);
-    if (vState === "SPEAKING" && videoUrl) {
-      setJudgeSpeakingVideoUrl(videoUrl);
-    } else {
-      setJudgeSpeakingVideoUrl(null);
-    }
-  }, []);
-
   const registerVideoEndCallback = useCallback((cb: (() => void) | null) => {
     videoEndCallbackRef.current = cb;
   }, []);
@@ -321,16 +260,7 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
       ? "IDLE"
       : scene === "RAHUL_WALKING" || scene === "RAHUL_NEAR" || scene === "HALL_IDLE" || scene === "RAHUL_FAR"
       ? "WALKING"
-      : scene === "RAHUL_EXIT"
-      ? "LEAVING"
       : rahulSpeechState;
-
-  const currentJudgeVideoState: JudgesVideoState =
-    scene === "JUDGE_ENTRY"
-      ? "ARRIVAL"
-      : scene === "JUDGE_CONVERSATION"
-      ? judgeVideoState
-      : "IDLE";
 
   if (scene === "SESSION_COMPLETE" || scene === "REPORT_GENERATION") {
     return (
@@ -342,13 +272,13 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
           </div>
         </div>
         <p className="font-mono text-xs uppercase tracking-widest text-sky-400 mb-2">
-          Hackathon Session Concluded
+          Session Complete
         </p>
         <h2 className="text-xl md:text-2xl font-bold text-white max-w-md">
           Report is generating...
         </h2>
         <p className="mt-3 text-sm text-neutral-400 max-w-sm leading-relaxed">
-          Analyzing speech metrics, vocal pacing, and judge feedback. Thank you for being patient.
+          Analyzing your speech metrics, communication style, and conversation quality.
         </p>
       </main>
     );
@@ -365,7 +295,6 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
         sessionId={sessionIdRef.current}
         timestamps={timestampsRef.current}
         interruptions={finalInterruptionsRef.current}
-        judgeTurns={judgeTurnsRef.current}
         onReportReady={handleReportReady}
         onRestart={onRestart}
       />
@@ -382,17 +311,11 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
         onRahulSpeakingEnded={handleRahulSpeakingEnded}
         onRahulSpeakingError={handleRahulSpeakingError}
         onRahulWalkingEnded={handleRahulWalkingEnded}
-        judgeVideoState={currentJudgeVideoState}
-        judgeSpeakingVideoUrl={judgeSpeakingVideoUrl}
-        onJudgeSpeakingEnded={handleJudgeSpeakingEnded}
-        onJudgeSpeakingError={handleJudgeSpeakingError}
-        onJudgeArrivalEnded={handleJudgeArrivalEnded}
-        onJudgeLeavingEnded={() => sceneSend({ type: "DIALOGUE_COMPLETE" })}
         hallAvailable
         charactersAvailable
       />
 
-      {/* Stage 1: Rahul Conversation */}
+      {/* Rahul Conversation */}
       {rahulConversationActive && (
         <ConversationController
           active
@@ -407,20 +330,6 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
           interruptions={interruptionsRef.current}
           onVisualStateChange={setRahulSpeechState}
           onRahulVideoGenerated={setRahulSpeakingVideoUrl}
-          registerVideoEndCallback={registerVideoEndCallback}
-          registerVideoErrorCallback={registerVideoErrorCallback}
-        />
-      )}
-
-      {/* Stage 2: Judges Conversation */}
-      {judgeConversationActive && (
-        <JudgeConversationController
-          project={project}
-          mediaStream={cameraStream}
-          onTurn={handleTurn}
-          onJudgeStageComplete={handleJudgeStageComplete}
-          interruptions={interruptionsRef.current}
-          onVisualStateChange={handleJudgeVisualStateChange}
           registerVideoEndCallback={registerVideoEndCallback}
           registerVideoErrorCallback={registerVideoErrorCallback}
         />
