@@ -15,16 +15,15 @@ import type {
   SessionTimestamps,
   SpeechMetrics,
   TranscriptTurn,
-  WebcamResult,
 } from "@/lib/session/sessionTypes";
 import QuestionAccordion from "./QuestionAccordion";
 import {
   ActionPlanCard,
-  CameraAndSpeechSection,
   CommunicationSummaryCard,
   HighlightsCard,
   NextSessionGoalsCard,
   OverviewScoreCard,
+  SpeechPresenceSection,
   StrengthsAndWeaknessesCard,
   TechnicalCommunicationCard,
   UnexpectedPerformanceCard,
@@ -34,8 +33,8 @@ interface Props {
   project: ProjectContext;
   transcript: TranscriptTurn[];
   speechMetrics: SpeechMetrics;
-  webcam: WebcamResult;
-  recording: Blob | null;
+  webcam?: { enabled: boolean; forwardFacingRatio?: number };
+  recording?: Blob | null;
   sessionId?: string;
   timestamps?: SessionTimestamps;
   interruptions?: InterruptionMetrics;
@@ -108,7 +107,7 @@ export default function ReportPage({
             project,
             transcript,
             speechMetrics,
-            webcam,
+            webcam: { enabled: false },
             sessionId,
             timestamps,
             interruptions,
@@ -337,12 +336,9 @@ export default function ReportPage({
             <NextSessionGoalsCard goals={student.nextSessionGoals} />
           </section>
 
-          {/* SECTION 12: Camera and Speech Presence */}
-          <section aria-label="Camera and Speech Presence">
-            <CameraAndSpeechSection
-              camera={student.cameraAnalysis}
-              speech={student.speechAnalysis}
-            />
+          {/* SECTION 12: Speech Delivery & Vocal Presence */}
+          <section aria-label="Speech and Verbal Presence">
+            <SpeechPresenceSection speech={student.speechAnalysis} />
           </section>
         </div>
 

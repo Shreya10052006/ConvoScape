@@ -31,26 +31,56 @@ export default function RahulVideoController({
   const [speakingActive, setSpeakingActive] = useState(false);
   const isWalking = state === "WALKING";
 
-  // Ensure base listening video plays continuously in the background
+  // Base listening video plays ONLY when Rahul is in the LISTENING state
   useEffect(() => {
     const el = listeningVideoRef.current;
-    if (el) {
+    if (!el) return;
+
+    if (state === "LISTENING") {
       el.muted = true;
       el.play().catch(() => {});
+    } else {
+      el.pause();
     }
-  }, []);
+  }, [state]);
 
-  // Handle Walking video playback
+  // Handle Walking video playback & preload opening turn
   useEffect(() => {
     const el = walkingVideoRef.current;
     if (!el) return;
 
     if (isWalking) {
-      el.currentTime = 0;
       el.muted = true;
-      const p = el.play();
-      if (p !== undefined) {
-        p.catch((err) => console.warn("[RahulVideoController] Walking play error:", err));
+      el.defaultMuted = true;
+      el.playsInline = true;
+
+      // Preload opening video while walking so transition into speaking is instant
+      if (speakingVideoRef.current) {
+        speakingVideoRef.current.src = "/generated/rahul-response-turn1-opening.mp4";
+        speakingVideoRef.current.preload = "auto";
+        speakingVideoRef.current.load();
+      }
+
+      const startPlay = () => {
+        el.muted = true;
+        const playPromise = el.play();
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => {
+              console.log("[RahulVideoController] Walking approach video started playing.");
+            })
+            .catch((err) => {
+              console.warn("[RahulVideoController] Autoplay deferred, will retry on canplay:", err);
+            });
+        }
+      };
+
+      if (el.readyState >= 2) {
+        startPlay();
+      } else {
+        el.addEventListener("canplay", startPlay, { once: true });
+        el.addEventListener("loadeddata", startPlay, { once: true });
+        startPlay();
       }
     } else {
       el.pause();
@@ -95,29 +125,40 @@ export default function RahulVideoController({
       className={`fixed inset-0 z-10 h-full w-full overflow-hidden bg-black ${className}`}
       style={style}
     >
-      {/* 1. Base Layer: Continuous looping listening video (zIndex: 1) */}
+      {/* 1. Base Layer: Looping listening video — ONLY active & visible when Rahul is listening */}
       <video
         ref={listeningVideoRef}
         src={RAHUL_VIDEO_ASSETS.listening}
-        autoPlay
         playsInline
         muted
         loop
         preload="auto"
-        className="absolute inset-0 h-full w-full object-cover z-[1]"
+        className={`absolute inset-0 h-full w-full object-cover z-[1] transition-opacity duration-300 ${
+          state === "LISTENING" ? "opacity-100" : "opacity-0 pointer-events-none"
+        }`}
       />
 
-      {/* 2. Walking Layer: Rahul walking approach (zIndex: 2) */}
+      {/* 2. Walking Layer: Rahul walking approach from hall door to table */}
       <video
         ref={walkingVideoRef}
         src={RAHUL_VIDEO_ASSETS.walking}
+        autoPlay
         playsInline
         muted
         preload="auto"
         onEnded={() => {
           if (isWalking) {
-            console.log("[RahulVideoController] Walking video ended.");
+            console.log("[RahulVideoController] Walking video ended -> Transitioning to opening line.");
             onWalkingEnded?.();
+          }
+        }}
+        onTimeUpdate={(e) => {
+          if (isWalking) {
+            const v = e.currentTarget;
+            if (v.duration > 0 && v.currentTime >= v.duration - 0.2) {
+              console.log("[RahulVideoController] Walking video near end -> Pre-triggering transition.");
+              onWalkingEnded?.();
+            }
           }
         }}
         className={`absolute inset-0 h-full w-full object-cover z-[2] transition-opacity duration-300 ${

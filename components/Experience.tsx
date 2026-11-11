@@ -3,29 +3,23 @@
 /**
  * Experience.tsx
  * ---------------------------------------------------------------------------
- * Orchestrator connecting visual scenes, dialogue machines, camera analysis,
+ * Orchestrator connecting visual scenes, dialogue machines,
  * speech recognition/synthesis, and the post-session report.
  *
- * CURRENT FLOW (Rahul-only):
- * 1. Rahul walking approach -> Rahul 10-turn peer practice conversation
- * 2. Rahul farewell -> Session complete -> Student Communication Report
+ * FULL STREAMLINED FLOW:
+ * 1. Rahul walking approach video (starts at 0.0s immediately upon entering hall)
+ * 2. Walking finishes -> seamless handoff into Rahul 10-turn conversation (Intro -> Q1..Q10 -> Farewell)
+ * 3. Rahul farewell -> Direct Student Communication Report (100% audio & speech metrics, zero camera).
  */
 
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import SceneController from "@/components/scene/SceneController";
 import ConversationController from "@/components/conversation/ConversationController";
-import CameraConsent from "@/components/camera/CameraConsent";
-import CameraAnalysis from "@/components/camera/CameraAnalysis";
-import FullscreenPrompt from "@/components/FullscreenPrompt";
 import ReportPage from "@/components/report/ReportPage";
 import { sceneReducer } from "@/lib/session/sceneMachine";
 import { conversationReducer, initialConversationState } from "@/lib/session/dialogueMachine";
 import { analyzeSpeech } from "@/lib/speech/speechAnalysis";
 import { primeVoices, stopSpeaking } from "@/lib/speech/speechSynthesis";
-import { requestMediaStream, stopCameraStream, type CameraState } from "@/lib/vision/cameraManager";
-import { SessionRecorder } from "@/lib/vision/sessionRecorder";
-import { BehaviorAggregator } from "@/lib/vision/behaviorMetrics";
-import type { FaceSample } from "@/lib/vision/faceLandmarks";
 import {
   newSessionId,
   summarisePhase,
@@ -34,30 +28,22 @@ import {
   type ProjectContext,
   type SessionTimestamps,
   type TranscriptTurn,
-  type WebcamResult,
 } from "@/lib/session/sessionTypes";
 import { InterruptionTracker } from "@/lib/speech/interruptionTracker";
 
 interface Props {
   project: ProjectContext;
+  mediaStream?: MediaStream | null;
   onRestart: () => void;
-  skipCameraConsentForTesting?: boolean;
 }
 
-export default function Experience({ project, onRestart, skipCameraConsentForTesting = false }: Props) {
+export default function Experience({ project, mediaStream = null, onRestart }: Props) {
   const [scene, sceneSend] = useReducer(sceneReducer, "RAHUL_WALKING");
   const [conversation, dispatchConversation] = useReducer(
     conversationReducer,
     undefined,
     initialConversationState
   );
-
-  const [cameraState, setCameraState] = useState<CameraState>("CAMERA_OFF");
-  const [cameraAsked, setCameraAsked] = useState(skipCameraConsentForTesting);
-  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
-  const [cameraNotice, setCameraNotice] = useState<string | null>(null);
-  const [recordingBlob, setRecordingBlob] = useState<Blob | null>(null);
-  const [fullscreenAsked, setFullscreenAsked] = useState(false);
 
   const sessionIdRef = useRef<string>("");
   if (!sessionIdRef.current) sessionIdRef.current = newSessionId();
@@ -76,43 +62,11 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
   const interruptionsRef = useRef(new InterruptionTracker());
   const finalInterruptionsRef = useRef<InterruptionMetrics | undefined>(undefined);
 
-  const aggregatorRef = useRef(new BehaviorAggregator());
-  const recorderRef = useRef(new SessionRecorder());
-  const finalWebcamRef = useRef<WebcamResult>({ enabled: false });
   const stageRef = useRef<ConversationStage>(conversation.stage);
   stageRef.current = conversation.stage;
 
   useEffect(() => {
     primeVoices();
-  }, []);
-
-  // --- Camera handlers -------------------------------------------------------
-  const handleEnableCamera = useCallback(async () => {
-    setCameraAsked(true);
-    setCameraState("CAMERA_REQUESTING");
-    try {
-      const stream = await requestMediaStream();
-      setCameraStream(stream);
-      setCameraState("CAMERA_ON");
-      try {
-        await recorderRef.current.start(stream);
-      } catch (recErr) {
-        console.warn("[Experience] Session recording couldn't start:", recErr);
-      }
-    } catch {
-      setCameraState("CAMERA_DENIED");
-      setCameraNotice("Camera permission denied. Proceeding in audio-only mode.");
-      setTimeout(() => setCameraNotice(null), 5000);
-    }
-  }, []);
-
-  const handleSkipCamera = useCallback(() => {
-    setCameraAsked(true);
-    setCameraState("CAMERA_OFF");
-  }, []);
-
-  const handleFaceSample = useCallback((sample: FaceSample) => {
-    aggregatorRef.current.addSample(sample);
   }, []);
 
   // --- Conversation Turn Handlers --------------------------------------------
@@ -129,7 +83,7 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
     [conversation.transcript, project]
   );
 
-  // Rahul stage completed — go directly to SESSION_COMPLETE and generate report
+  // Rahul stage completed — transition to SESSION_COMPLETE & background report generation
   const handleStageComplete = useCallback(() => {
     stamp("rahulPhaseEndedAt");
     stamp("sessionEndedAt");
@@ -145,7 +99,7 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
           project,
           transcript: conversation.transcript,
           speechMetrics,
-          webcam: aggregatorRef.current.sampleCount > 0 ? aggregatorRef.current.finalize() : { enabled: false },
+          webcam: { enabled: false }, // Explicitly disabled
           sessionId: sessionIdRef.current,
           timestamps: timestampsRef.current,
           interruptions: interruptionsRef.current.finalize(),
@@ -154,60 +108,51 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
     } catch {}
   }, [stamp, project, conversation.transcript, speechMetrics]);
 
-  // --- Session end: freeze metrics, stop capture ----------------------------
+  // --- Session end: freeze metrics, transition to report ----------------------
   useEffect(() => {
     if (scene !== "SESSION_COMPLETE") return;
 
     finalInterruptionsRef.current = interruptionsRef.current.finalize();
-    finalWebcamRef.current =
-      aggregatorRef.current.sampleCount > 0 ? aggregatorRef.current.finalize() : { enabled: false };
-
     stopSpeaking();
 
-    const t = setTimeout(async () => {
-      if (recorderRef.current.isRecording) {
-        const blob = await recorderRef.current.stop();
-        if (blob) setRecordingBlob(blob);
-      }
-      stopCameraStream(cameraStream);
-      setCameraStream(null);
+    const t = setTimeout(() => {
       sceneSend({ type: "REPORT_READY" }); // SESSION_COMPLETE -> REPORT_GENERATION
       setTimeout(() => {
         sceneSend({ type: "REPORT_READY" }); // REPORT_GENERATION -> REPORT
       }, 500);
-    }, 2800);
+    }, 2200);
 
     return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scene]);
 
   useEffect(() => {
     return () => {
       stopSpeaking();
-      stopCameraStream(cameraStream);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleReportReady = useCallback(() => {
     sceneSend({ type: "REPORT_READY" }); // REPORT_GENERATION -> REPORT
   }, []);
 
-  // Camera consent is asked right after setup questions before video scene starts
-  const showCameraConsent = !cameraAsked;
-  const showFullscreenPrompt = scene === "RAHUL_CONVERSATION" && !fullscreenAsked;
+  const walkingHandoffTriggeredRef = useRef(false);
 
+  // Walking approach ended -> seamlessly transition into Rahul's conversation & opening line
   const handleRahulWalkingEnded = useCallback(() => {
-    console.log("[Experience] Rahul walking approach video ended.");
+    if (walkingHandoffTriggeredRef.current) return;
+    walkingHandoffTriggeredRef.current = true;
+    console.log("[Experience] Rahul walking approach video ended -> Seamlessly starting opening line.");
     sceneSend({ type: "WALK_COMPLETE" });
-    sceneSend({ type: "NEAR_SETTLED" });
+    setTimeout(() => {
+      sceneSend({ type: "NEAR_SETTLED" });
+    }, 40);
   }, []);
 
   const activeStage: Exclude<ConversationStage, "done"> =
     conversation.stage === "done" ? "rahul" : conversation.stage;
 
   const rahulConversationActive =
-    scene === "RAHUL_CONVERSATION" && cameraAsked && conversation.stage === "rahul";
+    scene === "RAHUL_CONVERSATION" && conversation.stage === "rahul";
 
   const stageHistory = useMemo(
     () => conversation.transcript.filter((t) => t.stage === activeStage),
@@ -256,9 +201,7 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
   }, []);
 
   const rahulVideoState =
-    !cameraAsked
-      ? "IDLE"
-      : scene === "RAHUL_WALKING" || scene === "RAHUL_NEAR" || scene === "HALL_IDLE" || scene === "RAHUL_FAR"
+    scene === "RAHUL_WALKING" || scene === "RAHUL_NEAR" || scene === "HALL_IDLE" || scene === "RAHUL_FAR"
       ? "WALKING"
       : rahulSpeechState;
 
@@ -290,8 +233,6 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
         project={project}
         transcript={conversation.transcript}
         speechMetrics={speechMetrics}
-        webcam={finalWebcamRef.current}
-        recording={recordingBlob}
         sessionId={sessionIdRef.current}
         timestamps={timestampsRef.current}
         interruptions={finalInterruptionsRef.current}
@@ -315,7 +256,7 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
         charactersAvailable
       />
 
-      {/* Rahul Conversation */}
+      {/* Rahul Conversation Controller */}
       {rahulConversationActive && (
         <ConversationController
           active
@@ -323,7 +264,7 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
           project={project}
           stageHistory={stageHistory}
           priorPhaseSummary={priorPhaseSummary}
-          mediaStream={cameraStream}
+          mediaStream={mediaStream}
           onTurn={handleTurn}
           onTopic={handleTopic}
           onStageComplete={handleStageComplete}
@@ -332,26 +273,6 @@ export default function Experience({ project, onRestart, skipCameraConsentForTes
           onRahulVideoGenerated={setRahulSpeakingVideoUrl}
           registerVideoEndCallback={registerVideoEndCallback}
           registerVideoErrorCallback={registerVideoErrorCallback}
-        />
-      )}
-
-      {showCameraConsent && (
-        <CameraConsent onEnable={handleEnableCamera} onSkip={handleSkipCamera} />
-      )}
-
-      {showFullscreenPrompt && <FullscreenPrompt onDismiss={() => setFullscreenAsked(true)} />}
-
-      {cameraNotice && (
-        <div className="pointer-events-none fixed left-1/2 top-6 z-[700] -translate-x-1/2 rounded-full bg-black/70 px-4 py-2 text-xs text-neutral-300 backdrop-blur-sm">
-          {cameraNotice}
-        </div>
-      )}
-
-      {cameraStream && cameraState === "CAMERA_ON" && (
-        <CameraAnalysis
-          stream={cameraStream}
-          onSample={handleFaceSample}
-          recording={recorderRef.current.isRecording}
         />
       )}
     </>

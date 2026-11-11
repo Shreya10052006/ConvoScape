@@ -329,156 +329,89 @@ export function NextSessionGoalsCard({ goals }: { goals: string[] }) {
   );
 }
 
-export function CameraAndSpeechSection({
-  camera,
+export function SpeechPresenceSection({
   speech,
 }: {
-  camera: StudentCommunicationReport["cameraAnalysis"];
   speech: StudentCommunicationReport["speechAnalysis"];
 }) {
-  const eyeRatio = camera?.eyeContactRatio ?? 0;
-  const forwardRatio = camera?.forwardFacingRatio ?? 0;
-  const faceRatio = camera?.faceDetectedRatio ?? 0;
-
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-      {/* Camera Section */}
-      <div className="rounded-xl border border-white/10 bg-neutral-900/60 p-5 space-y-4">
-        <div className="flex justify-between items-center">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-neutral-300 font-mono flex items-center gap-2">
-            <span>👁</span> Presentation Presence & Camera Behavior
-          </h3>
-          <span
-            className={`rounded-full px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider ${
-              camera?.enabled
-                ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
-                : "bg-neutral-800 text-neutral-400"
-            }`}
-          >
-            {camera?.enabled ? "Active" : "Disabled (No Penalty)"}
-          </span>
-        </div>
+    <div className="rounded-xl border border-white/10 bg-neutral-900/60 p-6 space-y-4">
+      <div className="flex justify-between items-center border-b border-white/5 pb-3">
+        <h3 className="text-sm font-semibold uppercase tracking-wider text-neutral-200 font-mono flex items-center gap-2">
+          <span>🎙️</span> Speech Delivery & Vocal Presence
+        </h3>
+        <span
+          className={`rounded-full px-3 py-0.5 font-mono text-[10px] uppercase tracking-wider ${
+            speech?.wordsPerMinute != null
+              ? "bg-sky-500/20 text-sky-300 border border-sky-500/30 font-semibold"
+              : "bg-neutral-800 text-neutral-400"
+          }`}
+        >
+          {speech?.wordsPerMinute != null ? "Vocal Metrics Measured" : "Typed Input Mode"}
+        </span>
+      </div>
 
-        {camera?.enabled ? (
-          <div className="space-y-3">
-            <div className="grid grid-cols-3 gap-2">
-              <div className="bg-black/40 p-2.5 rounded-lg border border-white/5 text-center">
-                <span className="text-[10px] text-neutral-400 block leading-tight">Apparent Eye Contact</span>
-                <p className="font-mono text-sm sm:text-base font-bold text-emerald-400 mt-1">
-                  {Math.round(eyeRatio * 100)}%
-                </p>
-              </div>
-              <div className="bg-black/40 p-2.5 rounded-lg border border-white/5 text-center">
-                <span className="text-[10px] text-neutral-400 block leading-tight">Forward Facing</span>
-                <p className="font-mono text-sm sm:text-base font-bold text-sky-400 mt-1">
-                  {Math.round(forwardRatio * 100)}%
-                </p>
-              </div>
-              <div className="bg-black/40 p-2.5 rounded-lg border border-white/5 text-center">
-                <span className="text-[10px] text-neutral-400 block leading-tight">Face Visibility</span>
-                <p className="font-mono text-sm sm:text-base font-bold text-teal-400 mt-1">
-                  {Math.round(faceRatio * 100)}%
-                </p>
-              </div>
-            </div>
-
-            {camera.headOrientation && (
-              <div className="bg-black/30 p-3 rounded-lg border border-white/5 space-y-1.5">
-                <p className="text-[11px] font-mono uppercase text-neutral-400">Head Orientation Breakdown</p>
-                <div className="grid grid-cols-5 gap-1 text-center font-mono text-[10px]">
-                  <div className="bg-white/5 p-1 rounded">
-                    <span className="text-neutral-400 block">Fwd</span>
-                    <span className="text-white font-bold">{Math.round(camera.headOrientation.forwardRatio * 100)}%</span>
-                  </div>
-                  <div className="bg-white/5 p-1 rounded">
-                    <span className="text-neutral-400 block">Left</span>
-                    <span className="text-white">{Math.round(camera.headOrientation.leftRatio * 100)}%</span>
-                  </div>
-                  <div className="bg-white/5 p-1 rounded">
-                    <span className="text-neutral-400 block">Right</span>
-                    <span className="text-white">{Math.round(camera.headOrientation.rightRatio * 100)}%</span>
-                  </div>
-                  <div className="bg-white/5 p-1 rounded">
-                    <span className="text-neutral-400 block">Up</span>
-                    <span className="text-white">{Math.round(camera.headOrientation.upRatio * 100)}%</span>
-                  </div>
-                  <div className="bg-white/5 p-1 rounded">
-                    <span className="text-neutral-400 block">Down</span>
-                    <span className="text-white">{Math.round(camera.headOrientation.downRatio * 100)}%</span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {camera.observations && (
-              <p className="text-xs text-neutral-300 leading-relaxed bg-black/20 p-2.5 rounded-lg border border-white/5">
-                {camera.observations}
+      {speech?.wordsPerMinute != null ? (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="bg-black/40 p-3.5 rounded-xl border border-white/5 text-center">
+              <span className="text-[11px] text-neutral-400 block leading-tight">Speaking Pace</span>
+              <p className="font-mono text-lg sm:text-xl font-bold text-sky-400 mt-1">
+                {speech.wordsPerMinute ? `${speech.wordsPerMinute.toFixed(0)} wpm` : "N/A"}
               </p>
-            )}
-
-            <p className="text-[10px] text-neutral-500 leading-tight">
-              * Approximation based on local facial orientation and gaze landmarks. No psychological or confidence inferences are made.
-            </p>
-          </div>
-        ) : (
-          <div className="bg-black/40 p-4 rounded-lg border border-white/5 text-xs text-neutral-400 space-y-1">
-            <p className="font-medium text-neutral-300">Camera analysis was not enabled for this session.</p>
-            <p className="text-[11px]">No scores or presentation metrics were penalized.</p>
-          </div>
-        )}
-      </div>
-
-      {/* Speech Section */}
-      <div className="rounded-xl border border-white/10 bg-neutral-900/60 p-5 space-y-3">
-        <div className="flex justify-between items-center">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-neutral-300 font-mono flex items-center gap-2">
-            <span>🎙</span> Speech & Fluency
-          </h3>
-          <span
-            className={`rounded-full px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider ${
-              speech?.wordsPerMinute != null
-                ? "bg-sky-500/20 text-sky-300 border border-sky-500/30"
-                : "bg-neutral-800 text-neutral-400"
-            }`}
-          >
-            {speech?.wordsPerMinute != null ? "Measured" : "Voice Mode Available"}
-          </span>
-        </div>
-
-        {speech?.wordsPerMinute != null ? (
-          <div className="space-y-3">
-            <div className="grid grid-cols-3 gap-2">
-              <div className="bg-black/40 p-2.5 rounded-lg border border-white/5 text-center">
-                <span className="text-[10px] text-neutral-400 block leading-tight">Speaking Pace</span>
-                <p className="font-mono text-sm sm:text-base font-bold text-sky-400 mt-1">
-                  {speech.wordsPerMinute ? `${speech.wordsPerMinute.toFixed(0)} wpm` : "N/A"}
-                </p>
-              </div>
-              <div className="bg-black/40 p-2.5 rounded-lg border border-white/5 text-center">
-                <span className="text-[10px] text-neutral-400 block leading-tight">Filler Words</span>
-                <p className="font-mono text-sm sm:text-base font-bold text-amber-400 mt-1">
-                  {speech.totalFillerWords || 0}
-                </p>
-              </div>
-              <div className="bg-black/40 p-2.5 rounded-lg border border-white/5 text-center">
-                <span className="text-[10px] text-neutral-400 block leading-tight">Pauses (&ge;0.5s)</span>
-                <p className="font-mono text-sm sm:text-base font-bold text-teal-400 mt-1">
-                  {speech.totalPauseCount || 0}
-                </p>
-              </div>
+              <span className="text-[9px] text-neutral-500 block mt-0.5">Target: 120–160 wpm</span>
             </div>
-            {speech.summary && <p className="text-xs text-neutral-300 leading-relaxed bg-black/20 p-2.5 rounded-lg border border-white/5">{speech.summary}</p>}
-            <p className="text-[10px] text-neutral-500 leading-tight">
-              * Measured from continuous voice stream and audio activity timings. Natural conversational pauses and fillers are normal and evaluated in context.
-            </p>
+
+            <div className="bg-black/40 p-3.5 rounded-xl border border-white/5 text-center">
+              <span className="text-[11px] text-neutral-400 block leading-tight">Filler Words</span>
+              <p className="font-mono text-lg sm:text-xl font-bold text-amber-400 mt-1">
+                {speech.totalFillerWords || 0}
+              </p>
+              <span className="text-[9px] text-neutral-500 block mt-0.5">Detected total</span>
+            </div>
+
+            <div className="bg-black/40 p-3.5 rounded-xl border border-white/5 text-center">
+              <span className="text-[11px] text-neutral-400 block leading-tight">Pauses (&ge;0.5s)</span>
+              <p className="font-mono text-lg sm:text-xl font-bold text-teal-400 mt-1">
+                {speech.totalPauseCount || 0}
+              </p>
+              <span className="text-[9px] text-neutral-500 block mt-0.5">Natural pauses</span>
+            </div>
+
+            <div className="bg-black/40 p-3.5 rounded-xl border border-white/5 text-center">
+              <span className="text-[11px] text-neutral-400 block leading-tight">Hesitations (&gt;2s)</span>
+              <p className="font-mono text-lg sm:text-xl font-bold text-indigo-400 mt-1">
+                {speech.longPauseCount || 0}
+              </p>
+              <span className="text-[9px] text-neutral-500 block mt-0.5">Extended thinking</span>
+            </div>
           </div>
-        ) : (
-          <div className="bg-black/40 p-4 rounded-lg border border-white/5 text-xs text-neutral-400 space-y-1">
-            <p className="font-medium text-neutral-300">Speech fluency metrics are recorded in voice sessions.</p>
-            <p className="text-[11px]">Speech recognition was active for transcript recording.</p>
-          </div>
-        )}
-      </div>
+
+          {speech.summary && (
+            <div className="bg-black/30 p-3.5 rounded-xl border border-white/5 text-xs text-neutral-300 leading-relaxed">
+              <p className="font-semibold text-white mb-1">Vocal Analysis:</p>
+              <p>{speech.summary}</p>
+            </div>
+          )}
+
+          <p className="text-[10px] text-neutral-500 leading-tight">
+            * Measured from acoustic voice stream and silence boundaries via browser Web Audio API. Natural conversational pacing is evaluated in context with no psychological claims.
+          </p>
+        </div>
+      ) : (
+        <div className="bg-black/40 p-4 rounded-xl border border-white/5 text-xs text-neutral-400 space-y-1">
+          <p className="font-medium text-neutral-300">Speech fluency metrics are captured during microphone voice sessions.</p>
+          <p className="text-[11px]">Responses were submitted in typed mode for this session.</p>
+        </div>
+      )}
     </div>
   );
 }
+
+// Backwards compatibility alias
+export const CameraAndSpeechSection = ({
+  speech,
+}: {
+  camera?: any;
+  speech: StudentCommunicationReport["speechAnalysis"];
+}) => <SpeechPresenceSection speech={speech} />;

@@ -128,13 +128,13 @@ export interface PdfInput {
   project: ProjectContext;
   report: FinalReport;
   metrics: SpeechMetrics;
-  webcam: WebcamResult;
+  webcam?: WebcamResult;
   transcript: TranscriptTurn[];
-  hasRecording: boolean;
+  hasRecording?: boolean;
 }
 
 export async function buildReportPDF(input: PdfInput): Promise<Uint8Array> {
-  const { project, report, webcam } = input;
+  const { project, report, metrics } = input;
   const student = report.studentCommunication;
 
   const { PDFDocument, StandardFonts } = await import("pdf-lib");
@@ -228,12 +228,13 @@ export async function buildReportPDF(input: PdfInput): Promise<Uint8Array> {
     }
   }
 
-  // Camera Presence
-  heading(ctx, "Camera & Speech Presence");
-  if (webcam.enabled) {
-    text(ctx, `Camera enabled — Forward-facing ratio: ${(webcam.forwardFacingRatio * 100).toFixed(0)}%`);
+  // Speech Delivery & Vocal Presence
+  heading(ctx, "Speech Delivery & Vocal Presence");
+  if (metrics && metrics.totalSpeakingMs > 0) {
+    const wpm = metrics.wordsPerMinute ? `${metrics.wordsPerMinute.toFixed(0)} WPM` : "Measured via Audio";
+    text(ctx, `Speaking Pace: ${wpm}  |  Filler Words: ${metrics.totalFillerWords || 0}  |  Pauses: ${metrics.totalPauseCount || 0}`);
   } else {
-    text(ctx, "Camera analysis was not enabled for this session (no score penalty applied).", {
+    text(ctx, "Speech fluency and vocal metrics recorded via microphone voice audio.", {
       color: MUTED,
     });
   }
