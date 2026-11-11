@@ -332,6 +332,13 @@ export default function ConversationController({
 
       // --- STEP 0: INTRO VIDEO (Pre-generated) ---
       if (step === 0) {
+        // Background Warmup Ping: wake up Modal GPU container early
+        void fetch("/api/generate-video", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ warmup: true }),
+        }).catch(() => null);
+
         // Kick off Q2 generation immediately from questionnaire!
         triggerPrefetch(2);
 
