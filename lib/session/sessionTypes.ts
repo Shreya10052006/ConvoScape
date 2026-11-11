@@ -100,11 +100,14 @@ export interface TurnEvaluation {
 
 /**
  * Session phases.
- * Currently only Rahul peer conversation is active.
- * Judge phases are preserved for future development.
+ * In Rahul-only deployment, only Rahul is active.
+ * Other stages preserved as types for compatibility.
  */
 export type ConversationStage =
   | "rahul"          // peer conversation, ~5 min
+  | "judgeIntro"     // judges establish college / project / domain
+  | "presentation"   // user presents uninterrupted, 2-3 min
+  | "judgeQA"        // collaborative panel Q&A, ~5-7 min
   | "done";
 
 export interface ConversationState {
@@ -118,16 +121,16 @@ export interface ConversationState {
 }
 
 /**
- * Answer counts per phase, tuned to the durations in the spec rather than
- * picked round. Assuming ~35-45s per exchange once the model's line and a
- * considered answer are both counted, 7 exchanges lands Rahul near five
- * minutes, and 6 Q&A exchanges lands the panel in the 5-7 minute band.
+ * Answer counts per phase.
  */
 export const STAGE_TURN_TARGET: Record<Exclude<ConversationStage, "done">, number> = {
   rahul: 10,
+  judgeIntro: 3,
+  presentation: 1,
+  judgeQA: 6,
 };
 
-/** Order phases advance in. */
+/** Order phases advance in. In Rahul-only deployment, goes directly from rahul to done. */
 export const STAGE_ORDER: ConversationStage[] = [
   "rahul", "done",
 ];

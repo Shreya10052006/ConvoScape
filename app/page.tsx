@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import IntroHero from "@/components/intro/IntroHero";
 import ProjectSetup, { type ProjectContext } from "@/components/setup/ProjectSetup";
 import Experience from "@/components/Experience";
 
@@ -18,20 +19,33 @@ const DEFAULT_TEST_PROJECT: ProjectContext = {
 };
 
 export default function Home() {
+  const [view, setView] = useState<"intro" | "setup" | "experience">(
+    SKIP_SETUP_FOR_TESTING ? "experience" : "intro"
+  );
   const [project, setProject] = useState<ProjectContext | null>(
     SKIP_SETUP_FOR_TESTING ? DEFAULT_TEST_PROJECT : null
   );
   // Bumped on restart to force a full remount of Experience — every reducer,
-  // ref, and piece of session state resets cleanly rather than needing a
-  // hand-written reset path for each one.
+  // ref, and piece of session state resets cleanly.
   const [sessionKey, setSessionKey] = useState(0);
 
   useEffect(() => {
-    document.body.dataset.scene = project ? "immersive" : "setup";
-  }, [project]);
+    document.body.dataset.scene = view === "experience" ? "immersive" : "setup";
+  }, [view]);
 
-  if (!project) {
-    return <ProjectSetup onComplete={setProject} />;
+  if (view === "intro") {
+    return <IntroHero onStart={() => setView("setup")} />;
+  }
+
+  if (view === "setup" || !project) {
+    return (
+      <ProjectSetup
+        onComplete={(p) => {
+          setProject(p);
+          setView("experience");
+        }}
+      />
+    );
   }
 
   return (
@@ -40,7 +54,8 @@ export default function Home() {
       project={project}
       skipCameraConsentForTesting={SKIP_SETUP_FOR_TESTING}
       onRestart={() => {
-        setProject(SKIP_SETUP_FOR_TESTING ? DEFAULT_TEST_PROJECT : null);
+        setProject(null);
+        setView("intro");
         setSessionKey((k) => k + 1);
       }}
     />

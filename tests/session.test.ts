@@ -67,15 +67,9 @@ describe("timestamps", () => {
 });
 
 describe("conversation phase transitions", () => {
-  it("advances rahul -> judgeIntro -> presentation -> judgeQA -> done", () => {
+  it("advances rahul -> done", () => {
     let s = initialConversationState();
     expect(s.stage).toBe("rahul");
-    s = conversationReducer(s, { type: "ADVANCE_STAGE" });
-    expect(s.stage).toBe("judgeIntro");
-    s = conversationReducer(s, { type: "ADVANCE_STAGE" });
-    expect(s.stage).toBe("presentation");
-    s = conversationReducer(s, { type: "ADVANCE_STAGE" });
-    expect(s.stage).toBe("judgeQA");
     s = conversationReducer(s, { type: "ADVANCE_STAGE" });
     expect(s.stage).toBe("done");
     expect(s.isComplete).toBe(true);
@@ -119,13 +113,7 @@ describe("scene machine", () => {
     expect(s).toBe("RAHUL_NEAR");
     s = sceneReducer(s, { type: "NEAR_SETTLED" });
     expect(s).toBe("RAHUL_CONVERSATION");
-    // Rahul conversation finishes -> transitions to Judge Arrival
-    s = sceneReducer(s, { type: "DIALOGUE_COMPLETE" });
-    expect(s).toBe("JUDGE_ENTRY");
-    // Judges arrive and are seated -> transitions to Judge Conversation
-    s = sceneReducer(s, { type: "JUDGES_SEATED" });
-    expect(s).toBe("JUDGE_CONVERSATION");
-    // Judge conversation finishes -> transitions to Session Complete
+    // Rahul conversation finishes -> transitions directly to Session Complete
     s = sceneReducer(s, { type: "DIALOGUE_COMPLETE" });
     expect(s).toBe("SESSION_COMPLETE");
     s = sceneReducer(s, { type: "REPORT_READY" });
