@@ -330,6 +330,12 @@ export default function EnvironmentSetupModal({ onProceed, onBack }: Props) {
             {isFullscreen ? "Enter Hackathon Hall →" : "⛶ Enter Full Screen to Continue →"}
           </button>
         </div>
+
+        {/* Background Preload for Arena Assets */}
+        <div className="hidden" aria-hidden="true">
+          <video src="/assets/walking.mp4" preload="auto" muted />
+          <video src="/assets/listening.mp4" preload="auto" muted />
+        </div>
       </motion.div>
     </div>
   );

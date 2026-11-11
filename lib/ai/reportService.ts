@@ -141,35 +141,6 @@ const STUDENT_REPORT_JSON_SCHEMA = {
       },
     },
     nextSessionGoals: { type: "array", items: { type: "string" } },
-    cameraAnalysis: {
-      type: "object",
-      properties: {
-        enabled: { type: "boolean" },
-        eyeContactRatio: { type: "number" },
-        forwardFacingRatio: { type: "number" },
-        faceDetectedRatio: { type: "number" },
-        headOrientation: {
-          type: "object",
-          properties: {
-            forwardRatio: { type: "number" },
-            leftRatio: { type: "number" },
-            rightRatio: { type: "number" },
-            upRatio: { type: "number" },
-            downRatio: { type: "number" },
-          },
-        },
-        interruptions: {
-          type: "object",
-          properties: {
-            faceLostCount: { type: "number" },
-            prolongedLookAwayCount: { type: "number" },
-          },
-        },
-        observations: { type: "string" },
-        note: { type: "string" },
-      },
-      nullable: true,
-    },
   },
   required: [
     "reportType",
@@ -268,8 +239,7 @@ export function buildStudentReportInput(
       question,
       answer: rawAnswer,
       rawTranscript: rawAnswer,
-      normalizedTranscript: normalizedAnswer,
-      detailedAnswer,
+      // Intentionally omit normalizedTranscript and detailedAnswer from prompt to reduce tokens
       answerDurationSeconds: durationSeconds,
     });
   }
@@ -348,14 +318,23 @@ export async function generateStudentReport(
     "STUDENT PROJECT DETAILS:",
     JSON.stringify(compactInput.project, null, 2),
     "",
-    "CONVERSATION (Q1 to Q10):",
-    JSON.stringify(compactInput.conversation, null, 2),
+    "CONVERSATION (Q1 to Q10) — each entry has the question text and the student's raw spoken answer:",
+    JSON.stringify(
+      compactInput.conversation.map((c) => ({
+        questionNumber: c.questionNumber,
+        questionType: c.questionType,
+        question: c.question,
+        rawAnswer: c.rawTranscript || c.answer,
+        answerDurationSeconds: c.answerDurationSeconds,
+      })),
+      null,
+      2
+    ),
     "",
     "SPEECH & TIMING CONTEXT:",
     JSON.stringify(compactInput.speechMetrics || {}, null, 2),
     "",
-    "CAMERA ANALYSIS CONTEXT:",
-    JSON.stringify(compactInput.camera, null, 2),
+    "CAMERA: disabled (do not analyze, set cameraAnalysis: null in output).",
     "",
     "TASK: Generate the structured student communication report JSON.",
   ].join("\n");
@@ -367,9 +346,9 @@ export async function generateStudentReport(
         history: [],
         userMessage: prompt,
         responseSchema: STUDENT_REPORT_JSON_SCHEMA,
-        temperature: 0.6,
-        maxOutputTokens: 3000,
-        timeoutMs: 35_000,
+        temperature: 0.5,
+        maxOutputTokens: 2000,
+        timeoutMs: 40_000,
       },
       zodValidator(studentCommunicationReportSchema)
     );

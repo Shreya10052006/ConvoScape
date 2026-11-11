@@ -31,35 +31,29 @@ export default function RahulVideoController({
   const [speakingActive, setSpeakingActive] = useState(false);
   const isWalking = state === "WALKING";
 
-  // Base listening video plays ONLY when Rahul is in the LISTENING state
+  // Base listening video plays whenever Rahul is at the table (NOT walking)
   useEffect(() => {
     const el = listeningVideoRef.current;
     if (!el) return;
 
-    if (state === "LISTENING") {
+    if (!isWalking) {
       el.muted = true;
       el.play().catch(() => {});
     } else {
       el.pause();
     }
-  }, [state]);
+  }, [isWalking]);
 
-  // Handle Walking video playback & preload opening turn
+  // Handle Walking video playback
   useEffect(() => {
     const el = walkingVideoRef.current;
     if (!el) return;
 
     if (isWalking) {
+      el.currentTime = 0;
       el.muted = true;
       el.defaultMuted = true;
       el.playsInline = true;
-
-      // Preload opening video while walking so transition into speaking is instant
-      if (speakingVideoRef.current) {
-        speakingVideoRef.current.src = "/generated/rahul-response-turn1-opening.mp4";
-        speakingVideoRef.current.preload = "auto";
-        speakingVideoRef.current.load();
-      }
 
       const startPlay = () => {
         el.muted = true;
@@ -67,21 +61,50 @@ export default function RahulVideoController({
         if (playPromise !== undefined) {
           playPromise
             .then(() => {
-              console.log("[RahulVideoController] Walking approach video started playing.");
+              console.log("[RahulVideoController] Walking approach video started playing at 0.0s.");
             })
             .catch((err) => {
-              console.warn("[RahulVideoController] Autoplay deferred, will retry on canplay:", err);
+              console.warn("[RahulVideoController] Walking play error (immediate):", err);
+              // Retry after a short delay — browser may need a tick after fullscreen transition
+              setTimeout(() => {
+                el.muted = true;
+                el.play()
+                  .then(() => console.log("[RahulVideoController] Walking video started on retry."))
+                  .catch((e2) => console.warn("[RahulVideoController] Walking play retry also failed:", e2));
+              }, 150);
             });
         }
       };
 
       if (el.readyState >= 2) {
+        // Already loaded — play immediately
         startPlay();
       } else {
+        // Wait for canplay / loadeddata, but also attempt immediate call
+        // (some browsers need the src request in-flight to register intent)
         el.addEventListener("canplay", startPlay, { once: true });
         el.addEventListener("loadeddata", startPlay, { once: true });
-        startPlay();
+        // Attempt immediate — will retry via event if it fails
+        el.muted = true;
+        el.play().catch(() => {
+          // Event listeners will handle it once data is ready
+        });
       }
+
+      // Additional safety: force-play after 300 ms in case events fired before
+      // this effect ran (e.g. video was already in cache)
+      const safetyTimer = setTimeout(() => {
+        if (el.paused && walkingVideoRef.current === el) {
+          el.muted = true;
+          el.play().catch(() => {});
+        }
+      }, 300);
+
+      return () => {
+        clearTimeout(safetyTimer);
+        el.removeEventListener("canplay", startPlay);
+        el.removeEventListener("loadeddata", startPlay);
+      };
     } else {
       el.pause();
     }
@@ -125,7 +148,7 @@ export default function RahulVideoController({
       className={`fixed inset-0 z-10 h-full w-full overflow-hidden bg-black ${className}`}
       style={style}
     >
-      {/* 1. Base Layer: Looping listening video — ONLY active & visible when Rahul is listening */}
+      {/* 1. Base Layer: Looping listening video — ALWAYS visible when Rahul is at table listening */}
       <video
         ref={listeningVideoRef}
         src={RAHUL_VIDEO_ASSETS.listening}
@@ -134,7 +157,7 @@ export default function RahulVideoController({
         loop
         preload="auto"
         className={`absolute inset-0 h-full w-full object-cover z-[1] transition-opacity duration-300 ${
-          state === "LISTENING" ? "opacity-100" : "opacity-0 pointer-events-none"
+          !isWalking ? "opacity-100" : "opacity-0 pointer-events-none"
         }`}
       />
 
@@ -148,17 +171,8 @@ export default function RahulVideoController({
         preload="auto"
         onEnded={() => {
           if (isWalking) {
-            console.log("[RahulVideoController] Walking video ended -> Transitioning to opening line.");
+            console.log("[RahulVideoController] Walking video reached 100% end -> Transitioning to opening line.");
             onWalkingEnded?.();
-          }
-        }}
-        onTimeUpdate={(e) => {
-          if (isWalking) {
-            const v = e.currentTarget;
-            if (v.duration > 0 && v.currentTime >= v.duration - 0.2) {
-              console.log("[RahulVideoController] Walking video near end -> Pre-triggering transition.");
-              onWalkingEnded?.();
-            }
           }
         }}
         className={`absolute inset-0 h-full w-full object-cover z-[2] transition-opacity duration-300 ${
@@ -169,6 +183,7 @@ export default function RahulVideoController({
       {/* 3. Speaking Layer: Live dynamic lip-sync video with audio (zIndex: 3) */}
       <video
         ref={speakingVideoRef}
+        src={speakingVideoUrl || undefined}
         playsInline
         preload="auto"
         onEnded={() => {
@@ -181,7 +196,7 @@ export default function RahulVideoController({
           setSpeakingActive(false);
           onSpeakingError?.(e.currentTarget.error);
         }}
-        className={`absolute inset-0 h-full w-full object-cover z-[3] transition-opacity duration-200 ${
+        className={`absolute inset-0 h-full w-full object-cover z-[3] transition-opacity duration-150 ${
           state === "SPEAKING" && speakingActive ? "opacity-100" : "opacity-0 pointer-events-none"
         }`}
       />

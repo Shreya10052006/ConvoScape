@@ -140,6 +140,7 @@ export default function ConversationController({
 
   // Current Step in Rahul's sequence: 0=Intro, 1=Q1, 2=Q2, ..., 10=Q10, 11=Farewell
   const currentStepRef = useRef<number>(0);
+  const hasStartedRef = useRef(false);
   // Store user answers indexed by question number (1..10)
   const answersRef = useRef<Record<number, string>>({});
   // Prefetch slots for tailored turns (Q2, Q4, Q6, Q8, Q10)
@@ -591,10 +592,11 @@ export default function ConversationController({
 
   beginListeningRef.current = beginListening;
 
-  // Initialize Rahul's stage at step 0 (Intro)
+  // Initialize Rahul's stage at step 0 (Intro) — runs EXACTLY ONCE
   useEffect(() => {
-    if (!active) return;
+    if (!active || hasStartedRef.current) return;
     if (stage === "rahul") {
+      hasStartedRef.current = true;
       void executeStep(0);
     }
   }, [active, stage, executeStep]);
